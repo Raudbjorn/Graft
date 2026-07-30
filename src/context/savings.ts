@@ -77,18 +77,39 @@ export function setInputRate(usdPerMtok: number | null): void {
       : null;
 }
 
-/** Appended to every retrieval footer so the agent reports the turn's running
- * total even when SKILL.md isn't loaded — the instruction rides along in the
- * tool output itself. Deliberately free of the `[graft] tokens saved ≈ <n>`
- * pattern so the PostToolUse accumulator that parses these footers never
- * mistakes the nudge (or its example) for a second number to count.
+/**
+ * An instruction to the agent about what to say to its user, carried inside
+ * tool output. **Off unless `GRAFT_TURN_NUDGE` is set.**
+ *
+ * Everything else in the footer is data the agent may use or ignore. This line
+ * is different in kind: it directs the agent's reply to the user, on behalf of
+ * the tool, about the tool. Any host that pipes graft into an autonomous coding
+ * loop inherits that directive in every agent's context — measured on
+ * `graft skeleton` and `graft callers` output while wiring graft into
+ * mq-devEngine's coder loop, where 22 agents would each have started closing
+ * their reports with a graft tally nobody asked for.
+ *
+ * It is not removed, because the intent is legitimate — the number is real and
+ * a user who wants it should get it. It is made opt-in, because the fail-safe
+ * direction matters more than the default: forgetting to set an opt-out on one
+ * of 22 spawns puts the directive back in an agent's context, while forgetting
+ * to set an opt-in only loses a tally line. Hosts that want it can also state
+ * it in their instruction file, which `graft init` already writes
+ * (`src/claude/format.ts`, `src/claude/skill-template.ts`) — a place the user
+ * can read and edit, unlike tool output.
  *
  * Carries this call's dollar value once a rate has been measured, because the
  * agent has no way to price a token itself — the ask it's given has to contain
  * the number, not just request one. The example phrasing stays inside what
  * `hasSavingsTally` (claude/tally.ts) recognises, so adding money here does not
- * quietly zero the reported-turns metric. */
+ * quietly zero the reported-turns metric.
+ *
+ * Deliberately free of the `[graft] tokens saved ≈ <n>` pattern so the
+ * PostToolUse accumulator that parses these footers never mistakes the nudge
+ * (or its example) for a second number to count. */
 export function savingsTurnNudge(savedTokens: number): string {
+  const v = process.env.GRAFT_TURN_NUDGE;
+  if (!v || v === "0" || v === "false") return "";
   const sum = ' — sum each such line across your graft calls — e.g. ';
   if (inputRateUsdPerMtok === null || savedTokens <= 0) {
     return (

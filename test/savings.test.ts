@@ -50,12 +50,42 @@ test('savingsLine: reports saved tokens and percent when the output is smaller',
   assert.match(footer, /2 file\(s\)/);
   const base = toTokens(8000);
   assert.ok(footer.includes((base - toTokens(body.length)).toLocaleString()));
-  // The nudge rides along so the agent reports the turn total without SKILL.md.
-  assert.match(footer, /end of your reply/i);
-  assert.match(footer, /graft saved ~N tokens this turn/);
-  // The nudge must NOT introduce a second "[graft] tokens saved ≈ <n>" token —
-  // the PostToolUse accumulator sums every such match, so a stray one double-counts.
+  // The measurement is data; it always ships. The instruction telling the agent
+  // what to say to its user does not — see the opt-in tests below.
+  assert.doesNotMatch(footer, /end of your reply/i);
+  // Exactly one "[graft] tokens saved ≈ <n>" token — the PostToolUse
+  // accumulator sums every such match, so a stray one double-counts.
   assert.equal((footer.match(/\[graft\] tokens saved ≈ [\d,]+/g) ?? []).length, 1);
+});
+
+/**
+ * The footer used to end with an instruction addressed to the agent about what
+ * to say to its user. Wiring graft into an autonomous coding loop inherits that
+ * directive in every agent's context, so it is opt-in via `GRAFT_TURN_NUDGE`.
+ */
+test('savingsLine: the turn nudge is off by default and opt-in via env', () => {
+  const body = 'x'.repeat(40);
+  const saved = { files: 2, baselineChars: 8000 };
+  const previous = process.env.GRAFT_TURN_NUDGE;
+  try {
+    delete process.env.GRAFT_TURN_NUDGE;
+    assert.doesNotMatch(savingsLine(body, saved), /end of your reply/i);
+
+    for (const off of ['0', 'false', '']) {
+      process.env.GRAFT_TURN_NUDGE = off;
+      assert.doesNotMatch(savingsLine(body, saved), /end of your reply/i, `"${off}" must not enable it`);
+    }
+
+    process.env.GRAFT_TURN_NUDGE = '1';
+    const on = savingsLine(body, saved);
+    assert.match(on, /end of your reply/i);
+    assert.match(on, /graft saved ~N tokens this turn/);
+    // Opting in still must not create a second countable number.
+    assert.equal((on.match(/\[graft\] tokens saved ≈ [\d,]+/g) ?? []).length, 1);
+  } finally {
+    if (previous === undefined) delete process.env.GRAFT_TURN_NUDGE;
+    else process.env.GRAFT_TURN_NUDGE = previous;
+  }
 });
 
 test('savingsLine: stays silent when there is nothing honest to claim', () => {
@@ -81,30 +111,51 @@ test('withSavings: returns the body untouched when there is nothing to claim', (
 });
 
 test('the turn nudge carries no dollar figure until a rate is set', () => {
-  setInputRate(null);
-  const footer = savingsLine('body', { files: 2, baselineChars: 8000 });
-  assert.match(footer, /graft saved ~N tokens this turn/);
-  assert.doesNotMatch(footer, /\$/, 'no rate measured, so nothing is priced');
+  const previous = process.env.GRAFT_TURN_NUDGE;
+  process.env.GRAFT_TURN_NUDGE = '1';
+  try {
+    setInputRate(null);
+    const footer = savingsLine('body', { files: 2, baselineChars: 8000 });
+    assert.match(footer, /graft saved ~N tokens this turn/);
+    assert.doesNotMatch(footer, /\$/, 'no rate measured, so nothing is priced');
+  } finally {
+    if (previous === undefined) delete process.env.GRAFT_TURN_NUDGE;
+    else process.env.GRAFT_TURN_NUDGE = previous;
+  }
 });
 
 test('the turn nudge prices this call once a rate is set', () => {
   // $5/Mtok: a 1,000-token saving is worth half a cent, which must read as
   // "<$0.01" rather than "$0.00" — see formatDollars.
-  setInputRate(5);
-  const footer = savingsLine('x'.repeat(400), { files: 2, baselineChars: 8000 });
-  assert.match(footer, /worth <\$0\.01/);
-  assert.match(footer, /~\$X.*this turn/, 'the example shows the dollar-bearing form');
-  setInputRate(null);
+  const previous = process.env.GRAFT_TURN_NUDGE;
+  process.env.GRAFT_TURN_NUDGE = '1';
+  try {
+    setInputRate(5);
+    const footer = savingsLine('x'.repeat(400), { files: 2, baselineChars: 8000 });
+    assert.match(footer, /worth <\$0\.01/);
+    assert.match(footer, /~\$X.*this turn/, 'the example shows the dollar-bearing form');
+  } finally {
+    setInputRate(null);
+    if (previous === undefined) delete process.env.GRAFT_TURN_NUDGE;
+    else process.env.GRAFT_TURN_NUDGE = previous;
+  }
 });
 
 test('a priced nudge still leaves exactly one number for the accumulator', () => {
   // The nudge must never grow a second `[graft] tokens saved ≈ <n>` — the
   // PostToolUse accumulator sums every match, so an example carrying the
   // pattern would double-count the call.
-  setInputRate(5);
-  const footer = savingsLine('x'.repeat(400), { files: 2, baselineChars: 8000 });
-  assert.equal((footer.match(/\[graft\] tokens saved ≈ [\d,]+/g) ?? []).length, 1);
-  setInputRate(null);
+  const previous = process.env.GRAFT_TURN_NUDGE;
+  process.env.GRAFT_TURN_NUDGE = '1';
+  try {
+    setInputRate(5);
+    const footer = savingsLine('x'.repeat(400), { files: 2, baselineChars: 8000 });
+    assert.equal((footer.match(/\[graft\] tokens saved ≈ [\d,]+/g) ?? []).length, 1);
+  } finally {
+    setInputRate(null);
+    if (previous === undefined) delete process.env.GRAFT_TURN_NUDGE;
+    else process.env.GRAFT_TURN_NUDGE = previous;
+  }
 });
 
 test('a priced nudge still matches the reported-turns tally regex', () => {
