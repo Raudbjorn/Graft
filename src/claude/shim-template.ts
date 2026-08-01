@@ -2,30 +2,28 @@
 // job is to locate the installed `@nanonets/graft` package's `dist/claude/<entry>.js` and
 // call into it — so the real logic lives in the package and upgrades with it.
 //
-// Candidates, cheapest first (no subprocess for 1–3):
-//   1. `bakedDir`   — the absolute `dist/claude` graft was running from at init time.
-//                     Correct with zero guesswork for whoever ran `graft init`.
-//   2. repo node_modules — a local dev-dep install.
-//   3. `execDir/../lib`  — the cheap legacy guess (covers nvm / classic prefix layout).
-//   4. `npm root -g`     — authoritative global dir, layout-agnostic. Only shelled out to
-//                     when 1–3 all miss; queried on demand — no on-disk cache, which on a
+// Candidates, cheapest first (no subprocess for 1–2):
+//   1. repo node_modules — a local dev-dep install.
+//   2. `execDir/../lib`  — the cheap legacy guess (covers nvm / classic prefix layout).
+//   3. `npm root -g`     — authoritative global dir, layout-agnostic. Only shelled out to
+//                     when 1–2 both miss; queried on demand — no on-disk cache, which on a
 //                     shared machine would be a world-writable path an attacker could point
-//                     at their own code for us to import.
+//                     at their own code for us to import, and no host path baked into files
+//                     intended for source control.
 //
 // Among the candidates that exist we take the HIGHEST VERSION, not the first hit. First-hit
-// silently pinned users to a stale graft forever: `bakedDir` points into one Node install's
-// global node_modules, so switching Node versions (nvm/volta) or moving the install leaves
-// the old directory on disk and still winning, and `npm i -g @nanonets/graft@latest`
-// upgrades a directory the shim never looks at. The upgrade appeared to work and changed
-// nothing — the shim kept loading the version from whenever `graft init` was last run.
-function shim(entryFile: string, call: string, bakedDir: string): string {
+// silently pinned users to a stale graft forever: switching Node versions (nvm/volta) or
+// moving the install leaves an old directory on disk and still winning, and
+// `npm i -g @nanonets/graft@latest` upgrades a directory the shim never looks at. The
+// upgrade appeared to work and changed nothing — the shim kept loading whichever version
+// happened to resolve first.
+function shim(entryFile: string, call: string): string {
   return `#!/usr/bin/env node
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
 const { execFileSync } = require('child_process');
 const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-const BAKED = ${JSON.stringify(bakedDir)};
 
 // The dist/claude dir of @nanonets/graft resolved from a base whose node_modules is searched.
 function fromPkg(base) {
@@ -76,7 +74,7 @@ function best(dirs, name) {
 
 function entry(name) {
   // Cheap candidates first, and only shell out to npm when every one of them misses.
-  const cheap = [BAKED, fromPkg(dir), fromPkg(path.join(path.dirname(process.execPath), '..', 'lib'))];
+  const cheap = [fromPkg(dir), fromPkg(path.join(path.dirname(process.execPath), '..', 'lib'))];
   const hit = best(cheap, name);
   if (hit) return path.join(hit, name);
   const gr = globalRoot();
@@ -89,5 +87,5 @@ import(pathToFileURL(entry(${JSON.stringify(entryFile)})).href).then((m) => ${ca
 `;
 }
 
-export function statuslineShim(bakedDir: string): string { return shim('statusline.js', 'm.main()', bakedDir); }
-export function hooksShim(bakedDir: string): string { return shim('hooks.js', 'm.main(process.argv[2])', bakedDir); }
+export function statuslineShim(): string { return shim('statusline.js', 'm.main()'); }
+export function hooksShim(): string { return shim('hooks.js', 'm.main(process.argv[2])'); }

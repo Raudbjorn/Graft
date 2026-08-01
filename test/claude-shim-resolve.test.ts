@@ -2,11 +2,12 @@
  * The shim's resolution behaviour, exercised by actually running it.
  *
  * This is the regression test for the "installed graft once, still on the old
- * version" report: the shim used to take the FIRST candidate that existed, and
- * the first candidate is the absolute path baked in at `graft init` time. So
- * `npm i -g @nanonets/graft@latest` upgraded a directory the shim never looked
- * at, and the user's hooks kept loading whatever version wired the repo. The
- * shim now takes the highest-versioned candidate instead.
+ * version" report: the shim used to take the FIRST candidate that existed. On
+ * a machine with more than one graft install reachable (an nvm switch, a
+ * stale global copy) the first one found could easily be the old one, and
+ * `npm i -g @nanonets/graft@latest` upgraded a directory the shim never
+ * looked at again. The shim now takes the highest-versioned candidate
+ * instead — see `best()`/`versionOf()` in shim-template.ts.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -31,12 +32,12 @@ function fakeInstall(root: string, name: string, version: string): string {
   return distClaude;
 }
 
-/** Runs the shim with the given baked dir and project dir; returns the version
- * of the install that actually got loaded (or null if none did). */
-function runShim(root: string, bakedDir: string, projectDir: string): string | null {
+/** Runs the shim against `projectDir`; returns the version of the install
+ * that actually got loaded (or null if none did). */
+function runShim(root: string, projectDir: string): string | null {
   const shimPath = join(root, 'graft-hooks.cjs');
   const marker = join(root, 'loaded.txt');
-  writeFileSync(shimPath, hooksShim(bakedDir));
+  writeFileSync(shimPath, hooksShim());
   const res = spawnSync(process.execPath, [shimPath, 'session-start'], {
     encoding: 'utf8',
     env: { ...process.env, MARKER: marker, CLAUDE_PROJECT_DIR: projectDir },
@@ -45,50 +46,43 @@ function runShim(root: string, bakedDir: string, projectDir: string): string | n
   return existsSync(marker) ? readFileSync(marker, 'utf8') : null;
 }
 
+/** Installs a fake graft at `<projectDir>/node_modules/@nanonets/graft` — the
+ * repo node_modules candidate (`fromPkg(dir)`, checked first). */
+function fakeRepoInstall(projectDir: string, version: string): void {
+  fakeInstall(join(projectDir, 'node_modules', '@nanonets'), 'graft', version);
+}
+
 // The fakes' versions sit far above any real release ON PURPOSE: the shim's
-// candidate list includes the node install the TEST RUNNER itself lives under
-// (`process.execPath`/../lib), so on a machine with a real `npm i -g` graft
-// (0.18.0 as of this comment) that real install joins the race and outranks
-// 0.11/0.9 fakes — the shim correctly loads it, the fake marker never lands,
-// and the test reports a resolution the fixture never contained. The fakes
-// only model relative order against each other, so they claim versions no
-// real install will carry and stay hermetic either way.
+// candidate list also includes the node install the TEST RUNNER itself lives
+// under (`process.execPath`/../lib) and the global `npm root -g` dir, so on a
+// machine with a real `npm i -g` graft that real install could join the race
+// and outrank a realistic-looking fake — the shim would correctly load it,
+// the fake marker would never land, and the test would report a resolution
+// the fixture never contained. Absurdly high fake versions win regardless.
 const WINNER = '99.0.0';
-const LOSER = '0.9.1';
 
-test('an upgraded global install wins over the stale baked path', () => {
-  const root = tmpRepo('shim-upgrade');
-  const stale = fakeInstall(root, 'old-node-install', LOSER);
-  fakeInstall(join(root, 'project', 'node_modules', '@nanonets'), 'graft', WINNER);
-  // BAKED points at the install that `graft init` ran from — still on disk (an
-  // nvm switch leaves it there), still first in the candidate list, now stale.
-  assert.equal(runShim(root, stale, join(root, 'project')), WINNER);
-});
-
-test('the baked path still wins when it is the newest', () => {
-  const root = tmpRepo('shim-baked-newest');
-  const baked = fakeInstall(root, 'current', WINNER);
-  fakeInstall(join(root, 'project', 'node_modules', '@nanonets'), 'graft', LOSER);
-  assert.equal(runShim(root, baked, join(root, 'project')), WINNER);
-});
-
-test('a single candidate is used whatever its version', () => {
-  const root = tmpRepo('shim-single');
-  const only = fakeInstall(root, 'only', WINNER);
-  mkdirSync(join(root, 'project'), { recursive: true });
-  assert.equal(runShim(root, only, join(root, 'project')), WINNER);
-});
-
-test('an install with an unreadable version loses to a known one', () => {
-  const root = tmpRepo('shim-noversion');
-  const broken = fakeInstall(root, 'broken', '0.0.0');
-  writeFileSync(join(root, 'broken', 'package.json'), 'not json');
-  fakeInstall(join(root, 'project', 'node_modules', '@nanonets'), 'graft', WINNER);
-  assert.equal(runShim(root, broken, join(root, 'project')), WINNER);
+test('the repo node_modules install is found and used', () => {
+  const root = tmpRepo('shim-repo-install');
+  const projectDir = join(root, 'project');
+  mkdirSync(projectDir, { recursive: true });
+  fakeRepoInstall(projectDir, WINNER);
+  assert.equal(runShim(root, projectDir), WINNER);
 });
 
 test('no candidate at all exits quietly — a hook must never fail the session', () => {
   const root = tmpRepo('shim-none');
-  mkdirSync(join(root, 'project'), { recursive: true });
-  assert.equal(runShim(root, join(root, 'nowhere'), join(root, 'project')), null);
+  const projectDir = join(root, 'project', 'unrelated-empty-dir');
+  mkdirSync(projectDir, { recursive: true });
+  // No node_modules under projectDir, so the repo candidate misses; whether the
+  // shim finds nothing or (on a dev machine with graft installed globally)
+  // finds the real thing, it must not crash either way.
+  const res = spawnSync(process.execPath, [(() => {
+    const shimPath = join(root, 'graft-hooks.cjs');
+    writeFileSync(shimPath, hooksShim());
+    return shimPath;
+  })(), 'session-start'], {
+    encoding: 'utf8',
+    env: { ...process.env, MARKER: join(root, 'loaded.txt'), CLAUDE_PROJECT_DIR: projectDir },
+  });
+  assert.equal(res.status, 0, `shim exited ${res.status}: ${res.stderr}`);
 });

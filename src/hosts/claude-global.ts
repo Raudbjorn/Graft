@@ -28,7 +28,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { hooksShim } from '../claude/shim-template.js';
-import { claudeDistDir } from '../claude/paths.js';
 import { mergeGraftHooks } from '../claude/settings-merge.js';
 import { toPosixPath } from '../util/paths.js';
 import { readJsonObject, writeOwned, type ConfigWrite } from './config-write.js';
@@ -90,8 +89,8 @@ function upsertGlobalHooks(id: string, path: string, helpers: string): GlobalWri
  * The shim is written to `home` and the hook commands name it by absolute path, for
  * the reason the repo form can't be reused: `${CLAUDE_PROJECT_DIR}/.claude/helpers/`
  * resolves inside whatever project is open, and the whole point is to work in one
- * that has no such file. `hooksShim(claudeDistDir())` bakes in the installed
- * package's `dist/`, exactly as the Codex install does.
+ * that has no such file. `hooksShim()` resolves the installed package's `dist/` the
+ * same way at runtime, exactly as the Codex install does.
  *
  * Best-effort by contract, like every other writer here: a failure is reported as an
  * action, never raised, so a bad `~/.claude.json` can't fail a `graft init`.
@@ -104,7 +103,7 @@ export function installClaudeGlobal(home: string, opts: { mcp?: boolean; hooks?:
   const shim = byId.get('claude-global-shim');
   if (shim) {
     try {
-      out.push(writeOwned(shim.id, shim.path, hooksShim(claudeDistDir()), 0o755));
+      out.push(writeOwned(shim.id, shim.path, hooksShim(), 0o755));
     } catch {
       out.push({ id: shim.id, path: shim.path, action: 'skipped-unparseable' });
     }

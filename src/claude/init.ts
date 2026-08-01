@@ -6,7 +6,6 @@ import { installClaudeGlobal, type GlobalWrite } from '../hosts/claude-global.js
 import { mergeGraftSettings } from './settings-merge.js';
 import { statuslineShim, hooksShim } from './shim-template.js';
 import { skillTemplate } from './skill-template.js';
-import { claudeDistDir } from './paths.js';
 import { mergeJsonKey, serverEntry, type McpWrite } from '../hosts/mcp-config.js';
 import { hasGraftIndex } from '../graph/root.js';
 import type { PlannedWrite } from '../hosts/plan.js';
@@ -78,11 +77,10 @@ export function runInit(
   writeFileSync(settingsPath, `${JSON.stringify(merged, null, 2)}\n`);
 
   const sl = statusline;
-  const bakedDir = claudeDistDir(); // absolute <pkg>/dist/claude — the shims' primary resolution path
-  writeFileSync(sl, statuslineShim(bakedDir)); chmodSync(sl, 0o755);
+  writeFileSync(sl, statuslineShim()); chmodSync(sl, 0o755);
   const shims = [sl];
   if (opts.hooks !== false) {
-    writeFileSync(hooks, hooksShim(bakedDir)); chmodSync(hooks, 0o755);
+    writeFileSync(hooks, hooksShim()); chmodSync(hooks, 0o755);
     shims.push(hooks);
   }
 
