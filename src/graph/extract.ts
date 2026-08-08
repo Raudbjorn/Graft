@@ -18,7 +18,7 @@ import PHP from "tree-sitter-php";
 import CSharp from "tree-sitter-c-sharp";
 import { basename } from "node:path";
 import { contentHash } from "../util/id.js";
-import { collectBindings, goReceiverVarOf, resolveRecvType, type FileBindings } from "./bindings.js";
+import { collectBindings, collectGoPackages, goReceiverVarOf, resolveRecvType, type FileBindings } from "./bindings.js";
 import type { Kind, NodeV1, Relation } from "./types.js";
 
 export type Language = "typescript" | "tsx" | "python" | "go" | "java" | "kotlin" | "swift" | "php" | "r" | "csharp";
@@ -355,6 +355,7 @@ export interface WalkCtx {
   enclosingClass: string | null; // nearest enclosing class (py/ts `self`/`this`)
   goReceiverVar: string | null; // Go receiver var, e.g. `w` in `func (w *Worker)`
   importedSymbols: ReadonlyMap<string, { name: string; specifier: string }>;
+  goPackages: ReadonlySet<string>; // Go imported package identifiers, for pkg.Func() calls
   // R6 (Phase 2): which list we're inside while walking an `R6Class(...)` call's
   // arguments — set only for the direct span of a `public =`/`private =`/
   // `active =` `list(...)`'s own entries (see walk()'s special-cased `argument`
@@ -410,6 +411,7 @@ export function extractFile(rel: string, source: string, lang: Language): Extrac
   const bindings = collectBindings(root, lang);
   const importedSymbols = collectImportedSymbols(root, lang);
   const rGenerics = lang === "r" ? collectRGenerics(root) : EMPTY_SET;
+  const goPackages = collectGoPackages(root, lang);
 
   const nodes: NodeV1[] = [
     {
@@ -442,6 +444,7 @@ export function extractFile(rel: string, source: string, lang: Language): Extrac
     enclosingClass: null,
     goReceiverVar: null,
     importedSymbols,
+    goPackages,
     rR6Access: null,
     rGenerics,
     rSuperClass: null,
@@ -745,11 +748,23 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
       consumedCallee === "R6Class" || (consumedCallee === "list" && rIsMixinContainer(node));
     const callee = isConsumedRClassCall ? null : calleeName(node, ctx.lang, ctx);
     if (callee) {
+      const recvType = resolveRecvType(callee.receiver, ctx);
+      // Go: `pkg.Func()` where `pkg` is an imported package (and not a typed local
+      // shadowing it) is a package-qualified free-function call, not a member call.
+      // Resolve it by function name like a bare `Func()` — otherwise the resolver
+      // drops it as a member call with no receiver type, and cross-package calls
+      // (incl. those nested in composite/map literals) never link to their callee.
+      const goPkgCall =
+        ctx.lang === "go" &&
+        callee.viaMember &&
+        !recvType &&
+        !!callee.receiver &&
+        ctx.goPackages.has(callee.receiver);
       const callEdge: RawEdge = {
         source: ctx.parentId,
         relation: "calls",
         name: callee.name,
-        viaMember: callee.viaMember,
+        viaMember: goPkgCall ? false : callee.viaMember,
         file: ctx.rel,
         ...(callee.kinds ? { kinds: callee.kinds } : {}),
       };
@@ -788,7 +803,6 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
           implicitSelf: true,
         });
       } else {
-        const recvType = resolveRecvType(callee.receiver, ctx);
         edges.push(recvType ? { ...callEdge, recvType } : callEdge);
       }
     }
