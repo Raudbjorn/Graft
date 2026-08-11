@@ -539,23 +539,34 @@ function handleTs(
       tsAnnotationTypeName(node.childForFieldName("type"), aliases) ??
       tsNewTypeName(node.childForFieldName("value"), aliases);
     if (typeName) bindings.set(classScope ?? scopePath, `this.${name.text}`, typeName);
-  } else if (node.type === "required_parameter") {
+  } else if (node.type === "required_parameter" || node.type === "optional_parameter") {
     const pattern = node.childForFieldName("pattern");
     if (pattern?.type !== "identifier") return;
     const typeName = tsAnnotationTypeName(node.childForFieldName("type"), aliases);
     if (!typeName) return;
     bindings.set(scopePath, pattern.text, typeName);
-    // A parameter PROPERTY (`constructor(private readonly svc: Svc){}`) is a parameter
-    // AND a class field, so `this.svc` must resolve to its type — the default DI idiom
-    // in NestJS/Angular. The plain-parameter binding above keys on the bare name and at
-    // the constructor scope, which `this.svc.method()` call sites never reach; without
-    // the field-style binding here their recvType is undefined and the call edge is
-    // dropped (#76). Detected by the modifier child a plain parameter never carries.
-    const isParamProperty = node.children.some(
-      (c) => c.type === "accessibility_modifier" || c.type === "readonly" || c.type === "override_modifier",
-    );
-    if (isParamProperty) bindings.set(classScope ?? scopePath, `this.${pattern.text}`, typeName);
+    // A parameter property (`constructor(private readonly svc: Svc) {}`) is both a
+    // parameter and a class field, so it also needs the `this.`-keyed binding the
+    // `public_field_definition` branch emits — without it every `this.svc.method()`
+    // call site resolves with no recvType and the edge is dropped (#76). Optional
+    // parameter properties (`private d?: Svc`) carry the same modifiers on an
+    // `optional_parameter` node instead, so both node types are checked here.
+    if (isTsParameterProperty(node)) {
+      bindings.set(classScope ?? scopePath, `this.${pattern.text}`, typeName);
+    }
   }
+}
+
+const PARAM_PROPERTY_MODIFIERS = new Set(["accessibility_modifier", "override_modifier", "readonly"]);
+
+/** True for the TS shorthand that declares a field from a constructor parameter —
+ * marked by an accessibility modifier (`private`/`public`/`protected`),
+ * `override`, or `readonly`. */
+function isTsParameterProperty(node: Parser.SyntaxNode): boolean {
+  for (const child of node.children) {
+    if (PARAM_PROPERTY_MODIFIERS.has(child.type)) return true;
+  }
+  return false;
 }
 
 /**

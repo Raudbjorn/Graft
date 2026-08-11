@@ -43,31 +43,32 @@ test("ts: new-expression + type annotation + this", () => {
   assert.equal(edges.find((e) => e.name === "use")?.recvType, "Router");
 });
 
-test("ts: constructor parameter property binds this.<name> (#76 — the NestJS/Angular DI idiom)", () => {
-  // `private readonly svc: Svc` is a parameter AND a class field; `this.svc.m()` must
-  // resolve. Before the fix its recvType was undefined and the call edge was dropped.
-  const src = "class C {\n  constructor(private readonly svc: Svc) {}\n  run() { this.svc.m(); }\n}\n";
-  assert.equal(callEdges(src, "typescript").find((e) => e.name === "m")?.recvType, "Svc");
-  // every parameter-property modifier form: public / protected / bare readonly / override
-  const forms = [
-    "constructor(public svc: Svc) {}",
-    "constructor(protected svc: Svc) {}",
-    "constructor(readonly svc: Svc) {}",
-    "constructor(private override svc: Svc) {}",
-  ];
-  for (const ctor of forms) {
-    const s = `class C {\n  ${ctor}\n  run() { this.svc.m(); }\n}\n`;
-    assert.equal(callEdges(s, "typescript").find((e) => e.name === "m")?.recvType, "Svc", ctor);
+test("ts: constructor parameter property binds this.field (DI idiom)", () => {
+  const src =
+    "class ViaParam {\n  constructor(private readonly widgets: WidgetService) {}\n  run() { return this.widgets.build('a'); }\n}\n";
+  const edges = callEdges(src, "typescript");
+  assert.equal(edges.find((e) => e.name === "build")?.recvType, "WidgetService");
+});
+
+test("ts: parameter property variants (public/protected/readonly/optional) all bind", () => {
+  const src =
+    "class A {\n  constructor(public a: Svc, protected b: Svc, readonly c: Svc, private d?: Svc) {}\n  go() { this.a.one(); this.b.two(); this.c.three(); this.d.four(); }\n}\n";
+  const edges = callEdges(src, "typescript");
+  for (const name of ["one", "two", "three", "four"]) {
+    assert.equal(edges.find((e) => e.name === name)?.recvType, "Svc", `this.* call ${name}`);
   }
 });
 
-test("ts: a PLAIN constructor parameter creates no this.<name> binding (no over-reach)", () => {
-  // bare-name use of an ordinary parameter still binds (unchanged)
-  const bare = "class C {\n  constructor(svc: Svc) { svc.m(); }\n}\n";
-  assert.equal(callEdges(bare, "typescript").find((e) => e.name === "m")?.recvType, "Svc");
-  // but with no modifier it is NOT a field, so `this.svc` must stay unresolved (drop, not guess)
-  const viaThis = "class C {\n  constructor(svc: Svc) {}\n  run() { this.svc.m(); }\n}\n";
-  assert.equal(callEdges(viaThis, "typescript").find((e) => e.name === "m")?.recvType, undefined);
+test("ts: plain constructor parameter does NOT create a this.field binding", () => {
+  const src = "class A {\n  constructor(w: Svc) {}\n  go() { this.w.build(); }\n}\n";
+  const edges = callEdges(src, "typescript");
+  assert.equal(edges.find((e) => e.name === "build")?.recvType, undefined);
+});
+
+test("ts: parameter property still binds its bare name inside the constructor", () => {
+  const src = "class A {\n  constructor(private w: Svc) { w.init(); }\n}\n";
+  const edges = callEdges(src, "typescript");
+  assert.equal(edges.find((e) => e.name === "init")?.recvType, "Svc");
 });
 
 test("go: composite literal, var decl, NewX convention, receiver var", () => {
