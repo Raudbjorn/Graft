@@ -60,6 +60,7 @@ export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "lua", exts: [".lua"], wasm: "lua" },
   { name: "bash", exts: [".sh", ".bash"], wasm: "bash" },
   { name: "luau", exts: [".luau"], wasm: "luau" },
+  { name: "elisp", exts: [".el"], wasm: "elisp" },
 ];
 
 const byExt = new Map<string, GenericLang>();
