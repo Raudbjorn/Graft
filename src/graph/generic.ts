@@ -61,6 +61,10 @@ export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "bash", exts: [".sh", ".bash"], wasm: "bash" },
   { name: "luau", exts: [".luau"], wasm: "luau" },
   { name: "elisp", exts: [".el"], wasm: "elisp" },
+  // No npm grammar bundle publishes AL — its wasm is vendored in grammars/
+  // instead of the tree-sitter-wasm package; see requireWasm below and
+  // grammars/README.md.
+  { name: "al", exts: [".al"], wasm: "al" },
 ];
 
 const byExt = new Map<string, GenericLang>();
@@ -95,7 +99,8 @@ let initPromise: Promise<void> | null = null;
 
 function requireWasm(wasm: string): Buffer | null {
   // The bundle maps "<lang>/…" to its out/ directory. A language absent from the
-  // bundle can instead keep its reviewed WASM artifact beside the compiled extractor.
+  // bundle (AL has no npm grammar bundle entry at all) can instead keep its
+  // reviewed WASM artifact beside the compiled extractor, in GRAMMAR_DIRS below.
   try {
     return readFileSync(require.resolve(`tree-sitter-wasm/${wasm}/tree-sitter-${wasm}.wasm`));
   } catch {

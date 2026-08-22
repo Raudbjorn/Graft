@@ -135,6 +135,17 @@ const SNIPPETS: Array<{ lang: string; file: string; src: string; defs: string[];
     src: `let\n  helper = x: x + 1;\nin {\n  greet = name: helper 2;\n  version = "1.0";\n}\n`,
     defs: ["function:greet", "function:helper"], call: ["greet", "helper"],
   },
+  {
+    // AL (Business Central): a codeunit's procedures are `method`s, matching
+    // the generic-origin call-kind widening the java/ruby/c_sharp cases above
+    // already exercise. Grammar/query newly added for AL support.
+    lang: "al", file: "MyCodeunit.al",
+    src:
+      `codeunit 50100 MyCodeunit\n{\n` +
+      `    procedure Run(): Integer\n    begin\n        exit(Helper());\n    end;\n\n` +
+      `    procedure Helper(): Integer\n    begin\n        exit(1);\n    end;\n}\n`,
+    defs: ["class:MyCodeunit", "method:Helper", "method:Run"], call: ["Run", "Helper"],
+  },
 ];
 
 for (const s of SNIPPETS) {

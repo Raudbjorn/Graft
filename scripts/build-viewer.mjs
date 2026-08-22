@@ -44,7 +44,8 @@ for (const f of readdirSync(scmSrc)) {
 console.log(`grammar queries → dist/graph/queries/ (${scmCount} .scm)`);
 
 // A breadth grammar missing from tree-sitter-wasm can be vendored as a reviewed
-// runtime artifact. Ship its provenance and license beside it in the package.
+// runtime artifact (currently Luau, AL). Ship its provenance and license beside
+// it in the package.
 const grammarSrc = join(root, "src", "graph", "grammars");
 const grammarOut = join(root, "dist", "graph", "grammars");
 mkdirSync(grammarOut, { recursive: true });
