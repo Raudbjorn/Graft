@@ -17,9 +17,11 @@ graft/
 # Session transcripts and prompt traces — local analysis, not product.
 transcripts/
 
-# Claude Code settings — regenerated per machine by `graft init`, never shared
-# and never part of a PR diff (the hook helpers/skills alongside them stay tracked).
-.claude/settings.json
+# Claude Code settings. `.claude/settings.json` is tracked so Claude Code on
+# the web sessions get the SessionStart hook (a fresh container has no graft
+# CLI and no graph until it runs); its contents are CLAUDE_PROJECT_DIR-relative,
+# so they are portable. `graft init` rewrites it deterministically. Personal
+# overrides belong in settings.local.json, which stays ignored.
 .claude/settings.local.json
 
 # Cursor project config — written per machine by `graft init` (hooks, MCP, rule),
