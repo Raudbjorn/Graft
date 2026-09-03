@@ -23,6 +23,17 @@ export const LSP_SERVERS: readonly LspServer[] = [
   { languages: ["typescript", "javascript", "tsx"], command: "typescript-language-server", args: ["--stdio"], languageId: "typescript" },
 ];
 
+// Servers a language pack declared (packs.ts). Considered after the built-in rows, so
+// a pack cannot steal a language a built-in server already covers.
+const packServers: LspServer[] = [];
+export function registerLspServer(row: LspServer): void {
+  packServers.push(row);
+}
+/** Test seam: forget every pack-declared server. */
+export function resetLspServersForTest(): void {
+  packServers.length = 0;
+}
+
 const resolved = new Map<string, string | null>();
 /** Resolve a command to its ABSOLUTE path via the login shell's PATH. `spawn`
  * resolves against `process.env.PATH`, which often omits `~/.cargo/bin`,
@@ -51,10 +62,12 @@ export function pickServer(languagesPresent: Set<string>): LspServer | null {
  * languages they claim, so running all of them is strictly more coverage, not a
  * conflict. It also stops an unrelated language from deciding the outcome — a
  * Dart repo carrying a handful of `.c` files got clangd, because clangd sorts
- * first, and Dart went unenriched. */
+ * first, and Dart went unenriched. Pack-declared servers (packs.ts) are
+ * considered after the built-in rows, so a pack cannot steal a language a
+ * built-in server already covers. */
 export function pickServers(languagesPresent: Set<string>): LspServer[] {
   const out: LspServer[] = [];
-  for (const s of LSP_SERVERS) {
+  for (const s of [...LSP_SERVERS, ...packServers]) {
     if (!s.languages.some((l) => languagesPresent.has(l))) continue;
     const abs = resolveCommand(s.command);
     if (abs) out.push({ ...s, command: abs });

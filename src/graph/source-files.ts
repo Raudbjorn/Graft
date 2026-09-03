@@ -15,11 +15,17 @@ import { languageOf, depthExtensions } from "./extract.js";
 import { genericLangOf, genericExtensions } from "./generic.js";
 import { containerLangOf, containerExtensions } from "./container.js";
 import { ansibleClaims, ansibleExtensions } from "./ansible.js";
+import { loadLanguagePacks } from "./packs.js";
 
 /** Every extension graft has a parser for (depth + breadth + container + ansible), sorted
  * and de-duped — the authoritative answer to "what does `-e` actually support". */
-export function supportedExtensions(): string[] {
-  return [...new Set([...depthExtensions(), ...genericExtensions(), ...containerExtensions(), ...ansibleExtensions()])].sort();
+export function supportedExtensions(root?: string): string[] {
+  // A repo's language packs count as supported the moment `-e` is validated, which
+  // is before any walk has loaded them — so load here too (idempotent per root).
+  if (root) loadLanguagePacks(root);
+  return [
+    ...new Set([...depthExtensions(), ...genericExtensions(), ...containerExtensions(), ...ansibleExtensions()]),
+  ].sort();
 }
 
 /** Normalize a user-supplied extension: ensure a leading dot, lower-case. */
@@ -33,8 +39,8 @@ function normExt(e: string): string {
  * `graft build -e ".vue"` used to accept these silently and index nothing; the CLI warns
  * on whatever this returns so an unsupported extension is never a quiet no-op.
  */
-export function unsupportedExtensions(exts: string[]): string[] {
-  const supported = new Set(supportedExtensions());
+export function unsupportedExtensions(exts: string[], root?: string): string[] {
+  const supported = new Set(supportedExtensions(root));
   return exts.filter((e) => !supported.has(normExt(e)));
 }
 
@@ -71,6 +77,9 @@ export function listSourceFiles(
   }),
   onlyDirs?: ReadonlySet<string>,
 ): string[] {
+  // Language packs (`<root>/.graft/langs`, `~/.graft/langs`) add breadth-tier rows;
+  // they must be registered before the extension filter below decides what is source.
+  loadLanguagePacks(root);
   // A file is a source file if a depth-tier grammar (languageOf), a breadth-tier
   // grammar (genericLangOf), a container (containerLangOf) or the Ansible tier
   // (ansibleClaims) claims its extension. All four must agree here or `build` and
