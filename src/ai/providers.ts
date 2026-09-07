@@ -102,20 +102,50 @@ export function parseHeaderList(raw: string | undefined): Record<string, string>
   return out;
 }
 
-/** Merge user config with environment variables and defaults. */
-export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
+/** The three LLM passes of a `--deep` build, each overridable on its own. */
+export type LlmPass = "summary" | "synth" | "crux";
+export const LLM_PASSES: readonly LlmPass[] = ["summary", "synth", "crux"];
+const PASS_SETTINGS = ["PROVIDER", "MODEL", "BASE_URL", "API_KEY", "LLM_HEADERS"] as const;
+
+/** `GRAFT_<PASS>_<SETTING>` — e.g. `GRAFT_SYNTH_MODEL` — or undefined when no pass is given. */
+function passEnv(pass: LlmPass | undefined, setting: (typeof PASS_SETTINGS)[number]): string | undefined {
+  return pass ? process.env[`GRAFT_${pass.toUpperCase()}_${setting}`] : undefined;
+}
+
+/** True when any `GRAFT_<PASS>_*` variable is set for this pass. */
+export function hasPassOverrides(pass: LlmPass): boolean {
+  return PASS_SETTINGS.some((s) => passEnv(pass, s) !== undefined);
+}
+
+/**
+ * Merge user config with environment variables and defaults. With `pass`, each
+ * setting first consults its `GRAFT_<PASS>_*` variable — a pass-specific value
+ * beats a CLI flag, which beats the global env, which beats the default. Each
+ * setting falls back independently: a pass that switches provider must also name
+ * its model (and, off the default endpoint, its base URL and headers).
+ */
+export function resolveConfig(config: EngineConfig = {}, pass?: LlmPass): ResolvedConfig {
   const env = process.env;
-  const provider = config.provider ?? (env.GRAFT_PROVIDER as ProviderKind | undefined) ?? DEFAULTS.provider;
+  const provider =
+    (passEnv(pass, "PROVIDER") as ProviderKind | undefined) ??
+    config.provider ??
+    (env.GRAFT_PROVIDER as ProviderKind | undefined) ??
+    DEFAULTS.provider;
   // REQUESTY_* vars are honored only when the requesty provider is selected, so a
   // Requesty key is never sent to another endpoint by accident.
   const requesty = provider === "requesty";
 
-  const explicitKey = config.apiKey ?? env.GRAFT_API_KEY ?? (requesty ? env.REQUESTY_API_KEY : undefined);
+  const explicitKey =
+    passEnv(pass, "API_KEY") ??
+    config.apiKey ??
+    env.GRAFT_API_KEY ??
+    (requesty ? env.REQUESTY_API_KEY : undefined);
   const legacyKey = env.OPENROUTER_API_KEY;
   const apiKey = explicitKey ?? legacyKey ?? env.ORCAROUTER_API_KEY;
   const usedLegacyEnv = !explicitKey && !!legacyKey;
 
   const model =
+    passEnv(pass, "MODEL") ??
     config.model ??
     env.GRAFT_MODEL ??
     env.GRAFT_OPENROUTER_MODEL ??
@@ -123,6 +153,7 @@ export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
     DEFAULT_MODELS[provider];
 
   let baseUrl =
+    passEnv(pass, "BASE_URL") ??
     config.baseUrl ??
     env.GRAFT_BASE_URL ??
     (requesty ? env.REQUESTY_BASE_URL : undefined) ??
@@ -138,7 +169,9 @@ export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
 
   const merged = {
     ...((provider === "openai" && baseUrl?.includes("openrouter.ai")) || requesty ? { "X-Title": "graft" } : {}),
-    ...(config.headers ?? parseHeaderList(env.GRAFT_LLM_HEADERS)),
+    ...(passEnv(pass, "LLM_HEADERS") !== undefined
+      ? parseHeaderList(passEnv(pass, "LLM_HEADERS"))
+      : (config.headers ?? parseHeaderList(env.GRAFT_LLM_HEADERS))),
   };
   const headers = Object.keys(merged).length ? merged : undefined;
 
