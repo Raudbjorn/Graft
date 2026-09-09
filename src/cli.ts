@@ -965,7 +965,7 @@ program
   .option("--no-statusline", "skip writing Claude Code statusLine (keep a user-defined one)")
   .option("--dry-run", "print every file init would touch, then exit without writing")
   .option("-y, --yes", "skip the picker and wire every detected agent (the pre-0.8 default)")
-  .option("--no-global", "skip writes outside this repo (the ~/.codex/ config + hooks)")
+  .option("--no-global", "skip writes outside this repo (the ~/.codex/, ~/.config/muse, ~/.gemini writes)")
   .option("--brain <handoff>", "attach a Trail brain: <brainId>:<token> (or a bare brain id with GRAFT_BRAIN_TOKEN set)")
   .action(async (dir: string, opts: { build?: boolean; agents?: string[]; allAgents?: boolean; listAgents?: boolean; mcp?: boolean; hooks?: boolean; statusline?: boolean; dryRun?: boolean; yes?: boolean; global?: boolean; brain?: string }) => {
     if (opts.listAgents) {
@@ -1128,7 +1128,10 @@ function wireTarget(
     const retracted = changed(
       runRetract(repo, { home, apply: true, global: opts.global, cache: false, exclude: ids }),
     ).filter((r) => r.action !== "skipped-unparseable");
-    for (const r of retracted) console.error(`- removed ${r.path} (${r.what}) — agent not selected`);
+    for (const r of retracted)
+      console.error(
+        `- removed ${r.path} (${r.what}) — ${r.hostId === "legacy" ? "superseded by this version" : "agent not selected"}`,
+      );
 
     if (wantClaude) {
       // `global`/`home` are threaded through alongside `statusline`: the claude layer

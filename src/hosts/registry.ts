@@ -7,7 +7,7 @@
  * kind: 'owned'   → graft owns the whole file; overwrite it each run.
  */
 import { join } from 'node:path';
-import { instructionBody, cursorRule, kiroSteering, windsurfRule } from './instructions.js';
+import { instructionBody, kiroSteering, windsurfRule } from './instructions.js';
 import { dshInstructionBody } from './dsh.js';
 import { DSH_MARKERS, type Markers } from './sections.js';
 import { skillTemplate } from '../claude/skill-template.js';
@@ -60,8 +60,13 @@ export const HOSTS: HostTarget[] = [
     id: 'cursor',
     name: 'Cursor',
     kind: 'owned',
-    relPath: join('.cursor', 'rules', 'graft.mdc'),
-    content: cursorRule,
+    relPath: join('.claude', 'skills', 'graft', 'SKILL.md'),
+    content: skillTemplate,
+    // One canonical skill for every skill reader: Cursor compat-loads Claude
+    // skills dirs (.claude/skills project + user), so no per-agent copy is
+    // needed. Always-on guidance stays in AGENTS.md, which Cursor reads at
+    // root + nested as a rules alternative (replacing the old alwaysApply
+    // .mdc, now a LEGACY retract target).
     detect: (p) => p.dirExists(join(p.home, '.cursor')) || p.dirExists(join(p.repo, '.cursor')),
   },
   {
@@ -73,11 +78,28 @@ export const HOSTS: HostTarget[] = [
     detect: (p) => p.dirExists(join(p.home, '.gemini')),
   },
   {
+    id: 'muse',
+    name: 'Muse Code',
+    kind: 'section',
+    relPath: 'AGENTS.md',
+    content: instructionBody,
+    // Muse scaffolds AGENTS.md itself (`muse init`) and reads it every session,
+    // so the shared fenced block is the whole instruction story — same as the
+    // other AGENTS.md readers (agents, hermes, antigravity). Hooks + MCP are
+    // wired separately (see ./muse-hooks.ts and the `muse` case in mcp-config).
+    detect: (p) =>
+      p.dirExists(join(p.home, '.config', 'muse')) || p.dirExists(join(p.repo, '.muse')),
+  },
+  {
     id: 'grok',
     name: 'Grok (xAI)',
     kind: 'owned',
-    relPath: join('.grok', 'skills', 'graft', 'SKILL.md'),
+    relPath: join('.claude', 'skills', 'graft', 'SKILL.md'),
     content: skillTemplate,
+    // Same canonical skill as Cursor: Grok reads Claude Code skills alongside
+    // .grok, so the .grok/skills copy (now a LEGACY retract target) was pure
+    // duplication. Rules/pointer coverage comes from AGENTS.md, which Grok
+    // walks cwd→root.
     detect: (p) => p.dirExists(join(p.home, '.grok')) || p.dirExists(join(p.repo, '.grok')),
   },
   {

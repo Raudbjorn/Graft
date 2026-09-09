@@ -226,6 +226,19 @@ export function resolveEdges(
     if (!fileImports.has(e.file)) fileImports.set(e.file, new Set());
     fileImports.get(e.file)!.add(target);
   }
+
+  // Unity asset identity: `.meta` file nodes carry `signature: "guid:<hex>"`
+  // for a linkable sibling (a `.cs`, `.fbx`, `.prefab`, or `.unity` file), so
+  // the guid→asset map is derived from nodes exactly like the Java/C/PHP
+  // suffix indexes above — no out-of-band reads, and a guid change is a node
+  // change `check` can see.
+  const unityGuidMap = new Map<string, string>();
+  for (const n of nodes) {
+    if (n.kind !== "file" || !n.path.endsWith(".meta")) continue;
+    const m = /^guid:([0-9a-f]{32})$/.exec(n.signature ?? "");
+    if (m) unityGuidMap.set(m[1], n.path.slice(0, -".meta".length));
+  }
+
   const out: EdgeV1[] = [];
   const seen = new Set<string>();
   const add = (source: string, target: string, relation: Relation, confidence: EdgeV1["confidence"]) => {
@@ -273,7 +286,12 @@ export function resolveEdges(
       }
       add(e.source, hit?.id ?? e.name!, relation, hit?.confidence ?? "inferred");
     } else if (e.relation === "references" && e.name) {
-      if (e.specifier) {
+      if (e.unityGuid) {
+        // Unity `{fileID, guid}` ref with a known script class: scope to the
+        // guid-mapped file first (certain), else a unique global name match
+        // (a renamed class keeps its guid — still found, weaker claim).
+        resolveUnityRef(e, unityGuidMap, perFileName, globalName, byId, add);
+      } else if (e.specifier) {
         // A named import gives both halves needed for sound resolution: the module
         // it came from and the exported name. Resolve inside that file only, so a
         // same-named symbol elsewhere in the repo cannot become a false edge.
@@ -314,6 +332,11 @@ export function resolveEdges(
         const hit = resolveName(e.name, e.file, refKinds, perFileName, globalName);
         if (hit && hit.id !== e.source) add(e.source, hit.id, "references", hit.confidence);
       }
+    } else if (e.relation === "references" && e.unityGuid) {
+      // Unity `{fileID, guid}` ref without a class name (`m_Mesh`, nameless
+      // `m_Script`, `m_SourcePrefab`): the guid-mapped asset's file node — or
+      // its single class, for a script — is the target.
+      resolveUnityRef(e, unityGuidMap, perFileName, globalName, byId, add);
     } else if (e.relation === "calls") {
       if (e.viaMember) {
         if (!e.recvType) continue;
@@ -427,6 +450,57 @@ function ownerFromMethodId(id: string): string | undefined {
   const post = id.includes("#") ? id.split("#")[1] : id;
   const segs = post.split(".");
   return segs.length >= 2 ? segs[segs.length - 2] : undefined;
+}
+
+/** Nominal kinds a Unity `m_Script` guid can point at — C# scripts are classes;
+ * interface/struct/enum ride along so a same-named type in the mapped file is
+ * never silently skipped when the class moved on (rename drift). */
+const UNITY_TYPE_KINDS: Kind[] = ["class", "interface", "struct", "enum"];
+
+/**
+ * Resolve a Unity `{fileID, guid}` reference through the `.meta` guid map.
+ *
+ * With a class name (`m_Script` + `m_EditorClassIdentifier`): the mapped
+ * file's same-named type wins (`extracted`); otherwise a unique global match
+ * (the class was renamed but kept its guid). Without one (`m_Mesh`,
+ * `m_SourcePrefab`, nameless scripts): the mapped file's single type, if it
+ * has exactly one, else the mapped file node itself. A guid with no `.meta`
+ * (deleted scripts, `.meta`-less files) becomes an `unresolved:<guid>`
+ * `references` target — invariants-exempt like heritage names, never a crash.
+ */
+function resolveUnityRef(
+  e: RawEdge,
+  guidMap: Map<string, string>,
+  perFileName: Map<string, Map<string, NodeV1[]>>,
+  globalName: Map<string, NodeV1[]>,
+  byId: Map<string, NodeV1>,
+  add: (source: string, target: string, relation: Relation, confidence: EdgeV1["confidence"]) => void,
+): void {
+  const guid = e.unityGuid!;
+  const unresolved = `unresolved:${guid}`;
+  const asset = guidMap.get(guid);
+  if (!asset) {
+    add(e.source, unresolved, "references", "inferred");
+    return;
+  }
+  if (e.name) {
+    const scoped = (perFileName.get(asset)?.get(e.name) ?? []).filter((n) => UNITY_TYPE_KINDS.includes(n.kind));
+    if (scoped.length === 1) {
+      add(e.source, scoped[0].id, "references", "extracted");
+      return;
+    }
+    const hit = resolveName(e.name, e.file, UNITY_TYPE_KINDS, perFileName, globalName);
+    add(e.source, hit?.id ?? unresolved, "references", hit?.confidence ?? "inferred");
+    return;
+  }
+  const classlikes = [...(perFileName.get(asset)?.values() ?? [])]
+    .flat()
+    .filter((n) => UNITY_TYPE_KINDS.includes(n.kind));
+  if (classlikes.length === 1) {
+    add(e.source, classlikes[0].id, "references", "extracted");
+    return;
+  }
+  add(e.source, byId.has(asset) ? asset : unresolved, "references", byId.has(asset) ? "extracted" : "inferred");
 }
 
 /**

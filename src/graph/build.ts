@@ -21,6 +21,7 @@ import { extractFile, languageLabelOf, languageOf, type RawEdge } from "./extrac
 import { extractGeneric, genericLangOf, warmGenericGrammars } from "./generic.js";
 import { ansibleClaims, extractAnsible, warmAnsibleGrammar } from "./ansible.js";
 import { containerLangOf, extractContainer, warmContainerGrammars } from "./container.js";
+import { extractFbxFile, extractUnityFile, unityLangOf, UNITY_LABEL } from "./unity.js";
 import { contentHash } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
@@ -209,18 +210,24 @@ export async function buildGraph(
   files.forEach((f, i) => {
     const rel = f.rel;
     opts.onProgress?.({ phase: "parse", index: i, total: files.length, file: rel });
+    // Unity tier first: scenes/prefabs/metas/meshes are hand-split, never
+    // grammar-parsed (stock YAML grammars cannot parse `!u!` tags). Checked
+    // before every other tier so no grammar can shadow these extensions.
+    const unity = unityLangOf(f.abs);
     // Depth tier (hand-written, native grammar) if a language claims the file;
     // otherwise the breadth tier (generic tags.scm over a WASM grammar).
-    const lang = languageOf(f.abs);
+    const lang = unity ? null : languageOf(f.abs);
     // A container is neither tier: its wrapper grammar only locates the embedded
     // block, which then goes to the depth-tier extractor. Checked before the
     // breadth tier so a future grammar claiming .vue can't shadow it.
-    const container = lang ? null : containerLangOf(f.abs);
-    const generic = lang || container ? null : genericLangOf(f.abs);
+    const container = lang || unity ? null : containerLangOf(f.abs);
+    const generic = lang || container || unity ? null : genericLangOf(f.abs);
     // Ansible is last: it claims `.yml`/`.yaml`, which no other tier wants, and
     // it is the only tier that can decline a file it claimed.
-    const ansible = !lang && !container && !generic && ansibleClaims(f.abs);
-    const label = languageLabelOf(f.abs) ?? container?.name ?? generic?.name ?? (ansible ? "ansible" : "unknown");
+    const ansible = !lang && !container && !generic && !unity && ansibleClaims(f.abs);
+    const label = unity
+      ? UNITY_LABEL
+      : (languageLabelOf(f.abs) ?? container?.name ?? generic?.name ?? (ansible ? "ansible" : "unknown"));
     const cached = priorExtract.files[rel];
 
     // Every file is read and hashed, every build — only the *parse* is memoized.
@@ -270,13 +277,20 @@ export async function buildGraph(
 
     parsed++;
     try {
-      const { nodes: fileNodes, rawEdges: fileEdges } = lang
-        ? extractFile(rel, source, lang)
-        : container
-          ? extractContainer(rel, source, container)
-          : ansible
-            ? extractAnsible(rel, source)
-            : extractGeneric(rel, source, generic!.name);
+      // FBX is binary: `source` (a UTF-8 decoding) is only its hash identity —
+      // the model-name walk needs the raw bytes, read here. Every other Unity
+      // shape parses the decoded text like all tiers do.
+      const { nodes: fileNodes, rawEdges: fileEdges } = unity
+        ? unity === "fbx"
+          ? extractFbxFile(rel, source, readFileSync(f.abs))
+          : extractUnityFile(rel, source, unity)
+        : lang
+          ? extractFile(rel, source, lang)
+          : container
+            ? extractContainer(rel, source, container)
+            : ansible
+              ? extractAnsible(rel, source)
+              : extractGeneric(rel, source, generic!.name);
       nodes.push(...fileNodes);
       rawEdges.push(...fileEdges);
       sources.set(rel, source);

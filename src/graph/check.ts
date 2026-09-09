@@ -17,6 +17,7 @@
  * code. `stale` is a meaning-layer signal the last build already recorded.
  * `pending` (never summarized) is not drift — it's a deliberate Tier-1-only build.
  */
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { relPosix } from "../util/paths.js";
 import { contextDirFor } from "../context/node-file.js";
@@ -24,6 +25,7 @@ import { extractFile, languageOf } from "./extract.js";
 import { extractGeneric, genericLangOf, warmGenericGrammars } from "./generic.js";
 import { ansibleClaims, extractAnsible, warmAnsibleGrammar } from "./ansible.js";
 import { containerLangOf, extractContainer, warmContainerGrammars } from "./container.js";
+import { extractFbxFile, extractUnityFile, unityLangOf } from "./unity.js";
 import { listSourceFiles } from "./build.js";
 import { readGraph, wiringPath } from "./write.js";
 import { readFingerprint } from "./fingerprint.js";
@@ -106,10 +108,11 @@ export async function checkGraph(
     // stay in step: a tier the build extracts and the check cannot see reports as
     // `removed` forever, and the `graft build` the check tells you to run can never
     // repair it.
-    const lang = languageOf(file);
-    const container = lang ? null : containerLangOf(file);
-    const generic = lang || container ? null : genericLangOf(file);
-    const ansible = !lang && !container && !generic && ansibleClaims(file);
+    const unity = unityLangOf(file);
+    const lang = unity ? null : languageOf(file);
+    const container = lang || unity ? null : containerLangOf(file);
+    const generic = lang || container || unity ? null : genericLangOf(file);
+    const ansible = !lang && !container && !generic && !unity && ansibleClaims(file);
     let source: string | null;
     try {
       source = readSourceFile(file);
@@ -119,15 +122,19 @@ export async function checkGraph(
     if (source === null) continue; // unsupported encoding (e.g. UTF-16BE)
     const rel = relPosix(root, file);
     try {
-      const extracted = lang
-        ? extractFile(rel, source, lang)
-        : container
-          ? extractContainer(rel, source, container)
-          : generic
-            ? extractGeneric(rel, source, generic.name)
-            : ansible
-              ? extractAnsible(rel, source)
-              : null;
+      const extracted = unity
+        ? unity === "fbx"
+          ? extractFbxFile(rel, source, readFileSync(file))
+          : extractUnityFile(rel, source, unity)
+        : lang
+          ? extractFile(rel, source, lang)
+          : container
+            ? extractContainer(rel, source, container)
+            : generic
+              ? extractGeneric(rel, source, generic.name)
+              : ansible
+                ? extractAnsible(rel, source)
+                : null;
       // No tier claims this file. Spelled out rather than asserted away: the
       // `generic!` that used to stand in this position threw a TypeError on a
       // container-tier file, the catch below swallowed it as a parse failure, and

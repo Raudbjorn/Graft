@@ -231,11 +231,20 @@ test('a full init is fully retractable, and retraction is idempotent', () => {
 
 test('exclude spares the hosts init is about to rewrite', () => {
   const d = fresh();
-  const cursor = write(d, join('.cursor', 'rules', 'graft.mdc'), 'cursor\n');
+  const cursor = write(d, join('.claude', 'skills', 'graft', 'SKILL.md'), 'cursor\n');
   const kiro = write(d, join('.kiro', 'steering', 'graft.md'), 'kiro\n');
   runRetract(d, { apply: true, global: false, exclude: ['cursor'] });
   assert.ok(existsSync(cursor), 'selected host kept');
   assert.ok(!existsSync(kiro), 'unselected host retracted');
+});
+
+test('legacy per-agent copies retract even when their host is selected', () => {
+  const d = fresh();
+  const mdc = write(d, join('.cursor', 'rules', 'graft.mdc'), 'stale\n');
+  const grok = write(d, join('.grok', 'skills', 'graft', 'SKILL.md'), 'stale\n');
+  runRetract(d, { apply: true, global: false, exclude: ['cursor', 'grok'] });
+  assert.ok(!existsSync(mdc), 'superseded cursor rule removed despite exclusion');
+  assert.ok(!existsSync(grok), 'superseded grok skill copy removed despite exclusion');
 });
 
 test('--no-global never reaches outside the repo', () => {
@@ -246,6 +255,55 @@ test('--no-global never reaches outside the repo', () => {
   const rs = runRetract(d, { apply: true, home, global: false });
   assert.equal(rs.filter((r) => r.scope === 'global').length, 0, 'no global targets even considered');
   assert.ok(existsSync(join(home, '.codex', 'hooks', 'graft', 'graft-hooks.cjs')));
+});
+
+test('a muse init is fully retractable: hooks.json entries stripped, shim gone', () => {
+  const d = fresh();
+  const home = fresh();
+  runHostsInit(d, { agents: ['muse'], home, global: false });
+  const hooks = join(d, '.muse', 'hooks.json');
+  const shim = join(d, '.muse', 'hooks', 'graft-hooks.cjs');
+  assert.ok(existsSync(hooks) && existsSync(shim), 'init wrote both');
+
+  const first = changed(runRetract(d, { apply: true, home, global: false }));
+  assert.ok(!existsSync(shim), 'shim removed');
+  assert.ok(!existsSync(hooks), 'hooks.json held nothing but graft and is deleted, not emptied');
+  assert.ok(first.some((r) => r.hostId === 'muse'), 'muse targets reported');
+
+  const second = changed(runRetract(d, { apply: true, home, global: false }));
+  assert.deepEqual(second, [], 'second sweep is a no-op');
+});
+
+test('retract strips graft entries from .muse/hooks.json, keeping foreign ones', () => {
+  const d = fresh();
+  const home = fresh();
+  const cfg = write(d, join('.muse', 'hooks.json'), JSON.stringify({
+    hooks: {
+      PostToolUse: [
+        { matcher: 'Write|Edit', hooks: [{ type: 'command', command: 'node "/x/graft-hooks.cjs" post-edit' }] },
+        { matcher: 'Write', hooks: [{ type: 'command', command: 'their-hook.sh' }] },
+      ],
+      SessionStart: [
+        { hooks: [{ type: 'command', command: 'node "/x/graft-hooks.cjs" session-start' }] },
+      ],
+    },
+  }));
+  runRetract(d, { apply: true, home, global: false });
+  const root = JSON.parse(readFileSync(cfg, 'utf8'));
+  assert.equal(root.hooks.PostToolUse.length, 1);
+  assert.equal(root.hooks.PostToolUse[0].hooks[0].command, 'their-hook.sh');
+  assert.ok(!('SessionStart' in root.hooks), 'emptied event removed');
+});
+
+test('exclude spares the muse hooks init is about to rewrite', () => {
+  const d = fresh();
+  const home = fresh();
+  const hooks = write(d, join('.muse', 'hooks.json'), JSON.stringify({
+    hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node "/x/graft-hooks.cjs" session-start' }] }] },
+  }));
+  runRetract(d, { apply: true, home, global: false, exclude: ['muse'] });
+  assert.ok(existsSync(hooks), 'selected host kept');
+  assert.ok(readFileSync(hooks, 'utf8').includes('graft-hooks.cjs'), 'graft entry untouched');
 });
 
 test('global sweep strips graft hook entries from Codex hooks.json, keeping foreign ones', () => {

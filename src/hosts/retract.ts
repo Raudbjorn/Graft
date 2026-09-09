@@ -30,6 +30,7 @@ import { HOSTS } from './registry.js';
 import { ALL_MARKERS, type Markers } from './sections.js';
 import { mcpTargets, stripTomlSection } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
+import { museHookTargets } from './muse-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { projectAgentSkillTargets } from './project-agents.js';
 import { dshSkillTargets } from './dsh.js';
@@ -78,14 +79,20 @@ export interface RetractOpts {
 
 /**
  * Paths that older versions wrote and the live registries no longer mention.
- * Empty today — every host in `HOSTS` since the multi-host layer landed is
- * still there, and the marker string and the `graft` name have never changed,
- * so the derived list covers every version to date.
+ * First entries: the Cursor rule and Grok skill copy superseded by the
+ * canonical `.claude/skills/graft/SKILL.md`.
  *
  * This is where a *removed* host's file goes. Deleting an entry from `HOSTS`
  * without adding it here is what strands a file in every existing repo.
  */
-const LEGACY_TARGETS: { relPath: string; kind: 'owned' | 'section'; what: string }[] = [];
+const LEGACY_TARGETS: { relPath: string; kind: 'owned' | 'section'; what: string }[] = [
+  // Skill consolidation: Cursor and Grok converged on the canonical
+  // `.claude/skills/graft/SKILL.md` (both compat-read Claude skills dirs),
+  // so their per-agent copies are removed on sight. Both were graft-owned
+  // whole files (overwritten each init), so deletion loses no user content.
+  { relPath: join('.cursor', 'rules', 'graft.mdc'), kind: 'owned', what: 'superseded per-agent graft rule' },
+  { relPath: join('.grok', 'skills', 'graft', 'SKILL.md'), kind: 'owned', what: 'superseded per-agent graft skill copy' },
+];
 
 // ---------------------------------------------------------------------------
 // primitive operations
@@ -269,8 +276,12 @@ function stripClaudeSettings(path: string, apply: boolean): RetractAction {
   return 'removed';
 }
 
-/** Remove graft's PostToolUse/SessionStart/etc. entries from Codex's hooks.json. */
-function stripCodexHooks(path: string, apply: boolean): RetractAction {
+/**
+ * Remove graft's hook entries from a `{"hooks": {...}}` config — Codex's
+ * user-level hooks.json and Muse's repo-local `.muse/hooks.json` share this
+ * nesting, so one stripper serves both.
+ */
+function stripHookEntries(path: string, apply: boolean): RetractAction {
   if (!existsSync(path)) return 'absent';
   let root: Record<string, any>;
   try {
@@ -364,13 +375,14 @@ function targets(repo: string, opts: RetractOpts): Target[] {
    * Paths a *kept* host also writes, which must survive even though some other,
    * unselected host names them too.
    *
-   * Four hosts share `AGENTS.md` (agents, hermes, antigravity, dsh). Excluding by
-   * host id alone would strip that shared file's blocks on behalf of a host
-   * nobody selected, and the only reason the end state came out right was that
-   * `init` happened to rewrite it immediately afterwards. Exclude by path as
-   * well, so retraction never depends on what runs next. (DSH writes its own
-   * `graft:dsh:*` fence inside that file, so keeping dsh must spare it for the
-   * same reason the other three do.)
+   * Five hosts share `AGENTS.md` (agents, hermes, antigravity, dsh, muse).
+   * Excluding by host id alone would strip that shared file's blocks on
+   * behalf of a host nobody selected, and the only reason the end state came
+   * out right was that `init` happened to rewrite it immediately afterwards.
+   * Exclude by path as well, so retraction never depends on what runs next.
+   * (DSH writes its own `graft:dsh:*` fence inside that file, so keeping dsh
+   * must spare it for the same reason the other four do; muse shares the
+   * plain `graft:start` fence.)
    */
   const keptPaths = new Set<string>();
   for (const host of HOSTS) {
@@ -382,6 +394,7 @@ function targets(repo: string, opts: RetractOpts): Target[] {
     for (const t of claudeGlobalTargets(home)) keptPaths.add(t.path);
   }
   if (exclude.has('agents')) for (const t of hookTargets(home)) keptPaths.add(t.path);
+  if (exclude.has('muse')) for (const t of museHookTargets(repo)) keptPaths.add(t.path);
   if (exclude.has('antigravity')) for (const t of antigravitySkillTargets(home)) keptPaths.add(t.path);
   if (exclude.has('dsh')) for (const t of dshSkillTargets(repo)) keptPaths.add(t.path);
 
@@ -444,6 +457,18 @@ function targets(repo: string, opts: RetractOpts): Target[] {
     }
   }
 
+  // 2c. Muse's repo-local hooks. Unlike the MCP registration above (global, and
+  //     already covered through `mcpTargets`), these live in the repo, so they
+  //     retract regardless of `global` — mirroring how init writes them.
+  if (!exclude.has('muse')) {
+    for (const t of museHookTargets(repo)) {
+      add({
+        hostId: t.hostId, path: t.path, what: t.what, scope: t.scope,
+        run: (a) => (t.path.endsWith('.json') ? stripHookEntries(t.path, a) : removeFile(t.path, a)),
+      });
+    }
+  }
+
   // 3. Claude Code: settings fragments, both shims, the skill, and the .mcp.json key.
   if (!exclude.has('claude')) {
     const [settings, statusline, hooks, skill, mcp] = claudeTargets(repo).map((t) => t.path);
@@ -471,7 +496,7 @@ function targets(repo: string, opts: RetractOpts): Target[] {
       for (const t of hookTargets(home)) {
         add({
           hostId: t.hostId, path: t.path, what: t.what, scope: 'global',
-          run: (a) => (t.path.endsWith('.json') ? stripCodexHooks(t.path, a) : removeFile(t.path, a)),
+          run: (a) => (t.path.endsWith('.json') ? stripHookEntries(t.path, a) : removeFile(t.path, a)),
         });
       }
     }

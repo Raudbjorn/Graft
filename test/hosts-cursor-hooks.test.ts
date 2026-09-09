@@ -95,11 +95,11 @@ test('cursor hooks are repo-local, so --no-global does NOT suppress them', () =>
   assert.ok(existsSync(cfgPath(repo)), '--no-global keeps the repo-local Cursor hooks');
 });
 
-test('--no-hooks skips the Cursor hook files (rule file still written)', () => {
+test('--no-hooks skips the Cursor hook files (skill file still written)', () => {
   const home = fresh(); const repo = fresh();
   const r = runHostsInit(repo, { home, agents: ['cursor'], hooks: false });
   assert.ok(!existsSync(cfgPath(repo)), 'no hooks.json under --no-hooks');
   assert.ok(!existsSync(shimPath(repo)), 'no shim under --no-hooks');
   assert.ok(!r.hooks.some((h) => h.id?.startsWith('cursor')), 'no cursor hook writes reported');
-  assert.ok(existsSync(join(repo, '.cursor', 'rules', 'graft.mdc')), 'the rule file is still written');
+  assert.ok(existsSync(join(repo, '.claude', 'skills', 'graft', 'SKILL.md')), 'the canonical skill file is still written');
 });

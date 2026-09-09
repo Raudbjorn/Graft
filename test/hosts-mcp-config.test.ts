@@ -90,6 +90,52 @@ test('droid gets a repo-local .factory/mcp.json; pi and project-agents get nothi
   assert.deepEqual(again.map((x) => x.action), ['unchanged']);
 });
 
+test('muse gets a user-level settings.json with mcpServers + schema_version', () => {
+  const repo = fresh(); const home = fresh();
+  const w = registerMcpConfigs(repo, ['muse'], { home });
+  assert.deepEqual(w.map((x) => x.action), ['created']);
+  assert.equal(w[0].id, 'muse');
+  const cfg = JSON.parse(readFileSync(join(home, '.config', 'muse', 'settings.json'), 'utf8'));
+  assert.equal(cfg.schema_version, 1, 'Muse requires schema_version');
+  assert.deepEqual(cfg.mcpServers.graft, {
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@nanonets/graft', 'mcp'],
+  });
+  const again = registerMcpConfigs(repo, ['muse'], { home });
+  assert.deepEqual(again.map((x) => x.action), ['unchanged']);
+});
+
+test('muse merge preserves foreign servers and never overwrites schema_version', () => {
+  const repo = fresh(); const home = fresh();
+  mkdirSync(join(home, '.config', 'muse'), { recursive: true });
+  writeFileSync(
+    join(home, '.config', 'muse', 'settings.json'),
+    JSON.stringify({ schema_version: 1, mcpServers: { other: { transport: 'stdio', command: 'x' } } }),
+  );
+  registerMcpConfigs(repo, ['muse'], { home });
+  const cfg = JSON.parse(readFileSync(join(home, '.config', 'muse', 'settings.json'), 'utf8'));
+  assert.ok((cfg.mcpServers as any).other, 'foreign server preserved');
+  assert.ok((cfg.mcpServers as any).graft, 'graft server merged');
+  // A file missing schema_version gains it (Muse fails every command without it)...
+  const home2 = fresh();
+  mkdirSync(join(home2, '.config', 'muse'), { recursive: true });
+  writeFileSync(
+    join(home2, '.config', 'muse', 'settings.json'),
+    JSON.stringify({ mcpServers: {} }),
+  );
+  const w2 = registerMcpConfigs(repo, ['muse'], { home: home2 });
+  assert.deepEqual(w2.map((x) => x.action), ['updated']);
+  assert.equal(JSON.parse(readFileSync(join(home2, '.config', 'muse', 'settings.json'), 'utf8')).schema_version, 1);
+});
+
+test('muse MCP is global: --no-global suppresses it', () => {
+  const repo = fresh(); const home = fresh();
+  const w = registerMcpConfigs(repo, ['muse'], { home, global: false });
+  assert.deepEqual(w, [], 'nothing written');
+  assert.ok(!existsSync(join(home, '.config', 'muse', 'settings.json')));
+});
+
 test('JSON with non-object mcpServers value is skipped', () => {
   const repo = fresh(); const home = fresh();
   mkdirSync(join(repo, '.cursor'), { recursive: true });

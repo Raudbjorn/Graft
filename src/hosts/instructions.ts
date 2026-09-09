@@ -45,15 +45,6 @@ After big code changes, refresh the graph with \`graft build\` (deterministic,
 no API key, $0).`;
 }
 
-export function cursorRule(): string {
-  return `---
-description: Use the Graft context graph in graft/ before exploring source
-alwaysApply: true
----
-${instructionBody()}
-`;
-}
-
 export function kiroSteering(): string {
   return `---
 inclusion: always

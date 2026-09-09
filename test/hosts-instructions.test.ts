@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { instructionBody, cursorRule, kiroSteering, windsurfRule } from '../src/hosts/instructions.js';
+import { instructionBody, kiroSteering, windsurfRule } from '../src/hosts/instructions.js';
 
 test('canonical body names the three essentials', () => {
   const b = instructionBody();
@@ -16,12 +16,6 @@ test('canonical body names the three essentials', () => {
   assert.match(b, /\[scope\/\]/, 'teaches the [scope/] label on multi-scope/monorepo hits');
   assert.match(b, /--in <scope>\//, 'teaches narrowing with ask --in <scope>/');
   assert.ok(!/\bhook|statusline\b/i.test(b), 'no host-specific machinery in the shared body');
-});
-
-test('cursor rule has alwaysApply frontmatter and the body', () => {
-  const r = cursorRule();
-  assert.match(r, /^---\ndescription: .+\nalwaysApply: true\n---\n/);
-  assert.ok(r.includes(instructionBody()));
 });
 
 test('kiro steering has inclusion: always frontmatter and the body', () => {

@@ -142,8 +142,8 @@ test('wiredHostIds reads what init actually wrote, not what the machine has', ()
 
   mkdirSync(join(repo, '.claude', 'helpers'), { recursive: true });
   writeFileSync(join(repo, '.claude', 'helpers', 'graft-hooks.cjs'), '// shim');
-  mkdirSync(join(repo, '.cursor', 'rules'), { recursive: true });
-  writeFileSync(join(repo, '.cursor', 'rules', 'graft.mdc'), 'rule');
+  mkdirSync(join(repo, '.claude', 'skills', 'graft'), { recursive: true });
+  writeFileSync(join(repo, '.claude', 'skills', 'graft', 'SKILL.md'), 'skill');
   // A shared file graft does NOT own: present, but no fenced graft section.
   writeFileSync(join(repo, 'AGENTS.md'), '# my own notes\n');
 
@@ -185,7 +185,7 @@ test('reconcileWiring restores a host whose file went missing', () => {
   writeStamp(repo, '1.0.0', ['claude', 'cursor']);
   const calls: string[][] = [];
   const r = reconcileWiring(repo, '2.0.0', {
-    wired: () => ['claude'], // cursor's graft.mdc is no longer on disk
+    wired: () => ['claude'], // cursor's skill file is no longer on disk
     rewrite: (_repo, hosts) => { calls.push(hosts); },
   });
   assert.deepEqual(r?.hosts, ['claude', 'cursor']);

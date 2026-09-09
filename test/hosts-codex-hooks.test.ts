@@ -72,12 +72,22 @@ test('foreign hook entries are preserved; stale graft entries replaced', () => {
   assert.ok(!JSON.stringify(entries).includes('/old/'), 'stale graft entry removed');
 });
 
-test('editedFilePath reads the touched file from BOTH host edit-tool shapes', () => {
+test('editedFilePath reads the touched file from every host edit-tool shape', () => {
   const dir = '/repo';
   // Claude Code: Write/Edit state the absolute path directly
   assert.equal(
     editedFilePath({ tool_input: { file_path: '/repo/src/a.ts' } }, dir),
     '/repo/src/a.ts',
+  );
+  // Muse: edit_file names it as `path` (absolute in the observed payload)
+  assert.equal(
+    editedFilePath({ tool_input: { find: 'hi', path: '/repo/src/c.ts', replace: 'hi\nbye' } }, dir),
+    '/repo/src/c.ts',
+  );
+  // ... resolved against the repo when relative
+  assert.equal(
+    editedFilePath({ tool_input: { path: 'src/c.ts' } }, dir),
+    join(dir, 'src/c.ts'),
   );
   // Codex: apply_patch names the file (repo-relative) in the patch header → resolved absolute
   const patch = '*** Begin Patch\n*** Update File: src/b.ts\n@@\n-old\n+new\n*** End Patch';

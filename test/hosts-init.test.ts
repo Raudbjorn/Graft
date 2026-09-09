@@ -18,8 +18,9 @@ test('writes only detected hosts by default', () => {
   mkdirSync(join(home, '.cursor'));
   const r = runHostsInit(repo, { home });
   assert.deepEqual(r.written.map((w) => w.id), ['cursor']);
-  const mdc = readFileSync(join(repo, '.cursor', 'rules', 'graft.mdc'), 'utf8');
-  assert.match(mdc, /alwaysApply: true/);
+  const skill = readFileSync(join(repo, '.claude', 'skills', 'graft', 'SKILL.md'), 'utf8');
+  assert.match(skill, /name: graft/);
+  assert.ok(!existsSync(join(repo, '.cursor', 'rules', 'graft.mdc')));
   assert.ok(!existsSync(join(repo, 'AGENTS.md')));
 });
 
@@ -34,7 +35,7 @@ test('explicit agents list overrides detection and flags unknown ids', () => {
 test('all writes every host and re-run converges (idempotent)', () => {
   const home = fresh(); const repo = fresh();
   const first = runHostsInit(repo, { home, all: true });
-  assert.equal(first.written.length, 14);
+  assert.equal(first.written.length, 15);
   const second = runHostsInit(repo, { home, all: true });
   assert.ok(second.written.every((w) => w.action === 'unchanged'));
   assert.ok(second.hooks.every((w) => w.action === 'unchanged'), 'skill/hook writes converge too');
@@ -177,10 +178,10 @@ test('mcp: false skips MCP registration', () => {
   assert.ok(!existsSync(join(repo, '.cursor', 'mcp.json')));
 });
 
-test('CLI: --no-mcp writes the rule file but no MCP config', () => {
+test('CLI: --no-mcp writes the skill file but no MCP config', () => {
   const repo = fresh();
   execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--no-build', '--agents', 'cursor', '--no-mcp'], { encoding: 'utf8' });
-  assert.ok(existsSync(join(repo, '.cursor', 'rules', 'graft.mdc')));
+  assert.ok(existsSync(join(repo, '.claude', 'skills', 'graft', 'SKILL.md')));
   assert.ok(!existsSync(join(repo, '.cursor', 'mcp.json')));
 });
 
@@ -265,7 +266,7 @@ test('CLI: --yes wires every detected agent (the pre-0.8 default)', () => {
   mkdirSync(join(home, '.cursor'));
   cliStderr(repo, home, ['--yes']);
   assert.ok(existsSync(join(repo, '.claude', 'settings.json')));
-  assert.ok(existsSync(join(repo, '.cursor', 'rules', 'graft.mdc')));
+  assert.ok(existsSync(join(repo, '.claude', 'skills', 'graft', 'SKILL.md')));
   // gemini was never installed in this scratch home, so it is not wired.
   assert.ok(!existsSync(join(repo, 'GEMINI.md')));
 });
@@ -293,7 +294,7 @@ test('CLI: --no-global stays quiet when the selection has nothing out-of-repo', 
   mkdirSync(join(home, '.codex'), { recursive: true });
   // cursor writes only inside the repo, so there is nothing for --no-global to skip.
   const out = cliStderr(repo, home, ['--agents', 'cursor', '--no-global']);
-  assert.ok(existsSync(join(repo, '.cursor', 'rules', 'graft.mdc')));
+  assert.ok(existsSync(join(repo, '.claude', 'skills', 'graft', 'SKILL.md')));
   assert.doesNotMatch(out, /skipped out-of-repo writes/);
 });
 

@@ -14,6 +14,7 @@ import { HOSTS, detectHosts, type DetectProbe, type HostTarget } from './registr
 import { mcpTargets } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
 import { cursorHookTargets } from './cursor-hooks.js';
+import { museHookTargets } from './muse-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { projectAgentSkillTargets } from './project-agents.js';
 import { dshSkillTargets } from './dsh.js';
@@ -86,6 +87,7 @@ export function planInit(repo: string, opts: { home?: string; ids?: string[]; mc
         ...mcpTargets(repo, [host.id], { home }),
         ...(host.id === 'agents' ? hookTargets(home) : []),
         ...(host.id === 'cursor' ? cursorHookTargets(repo) : []),
+        ...(host.id === 'muse' ? museHookTargets(repo) : []),
         ...(host.id === 'antigravity' ? antigravitySkillTargets(home) : []),
         ...(host.id === 'project-agents' ? projectAgentSkillTargets(repo) : []),
         // DSH's skill is repo-local, so `--no-global` never suppresses it; only

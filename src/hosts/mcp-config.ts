@@ -25,6 +25,9 @@ export interface McpTarget extends PlannedWrite {
   topKey?: string;
   /** JSON only: the server entry to merge in under `graft`. */
   entry?: object;
+  /** JSON only: top-level keys the host requires (applied as `??=` — a value
+   *  the user already set is never overwritten). */
+  defaults?: Record<string, unknown>;
 }
 
 /**
@@ -76,10 +79,20 @@ function dirExists(p: string): boolean {
   try { return statSync(p).isDirectory(); } catch { return false; }
 }
 
-export function mergeJsonKey(id: string, path: string, topKey: string, entry: object): McpWrite {
+export function mergeJsonKey(
+  id: string,
+  path: string,
+  topKey: string,
+  entry: object,
+  opts: { defaults?: Record<string, unknown> } = {},
+): McpWrite {
   const loaded = readJsonObject(path);
   if (loaded === 'unparseable') return { id, path, action: 'skipped-unparseable' };
   const { root, existed } = loaded;
+  // Host-mandated top-level keys (Muse's `schema_version: 1`) land before the
+  // snapshot, so adding a missing one counts as a change and a present one —
+  // even a differently-valued one, which is the user's to keep — stays put.
+  for (const [k, v] of Object.entries(opts.defaults ?? {})) root[k] ??= v;
   const bucket = (root[topKey] ??= {});
   if (typeof bucket !== 'object' || bucket === null || Array.isArray(bucket)) {
     return { id, path, action: 'skipped-unparseable' };
@@ -155,8 +168,9 @@ function jsonTarget(
   topKey: string,
   entry: object,
   scope: PlannedWrite['scope'] = 'repo',
+  defaults?: Record<string, unknown>,
 ): McpTarget {
-  return { hostId, id, path, scope, kind: 'mcp', what: `${topKey}.graft`, format: 'json', topKey, entry };
+  return { hostId, id, path, scope, kind: 'mcp', what: `${topKey}.graft`, format: 'json', topKey, entry, defaults };
 }
 
 /**
@@ -192,6 +206,20 @@ export function mcpTargets(
       case 'kiro':
         out.push(jsonTarget(id, id, join(repo, '.kiro', 'settings', 'mcp.json'), 'mcpServers', entry));
         break;
+      case 'muse': {
+        // Muse reads MCP from the user-level `~/.config/muse/settings.json` —
+        // the camelCase `mcpServers` map (verified against the live file; the
+        // report's `mcp_servers` spelling is for TOML hosts, not this one) with
+        // a stdio `{ command, args }` entry like every other JSON host, plus a
+        // mandatory top-level `schema_version: 1` (a missing key fails every
+        // Muse command at startup). Global scope: it applies to every workspace
+        // opened in Muse, so `--no-global` suppresses it.
+        const museEntry = { transport: 'stdio', ...entry };
+        out.push(
+          jsonTarget(id, 'muse', join(home, '.config', 'muse', 'settings.json'), 'mcpServers', museEntry, 'global', { schema_version: 1 }),
+        );
+        break;
+      }
       case 'grok':
         // Grok reads MCP from repo-level `.grok/config.toml` (`[mcp_servers.<name>]`),
         // the same TOML shape Codex uses at ~/.codex/config.toml.
@@ -237,6 +265,6 @@ export function registerMcpConfigs(
     .map((t) =>
       t.format === 'toml'
         ? upsertCodexToml(t.id, t.path)
-        : mergeJsonKey(t.id, t.path, t.topKey!, t.entry!),
+        : mergeJsonKey(t.id, t.path, t.topKey!, t.entry!, { defaults: t.defaults }),
     );
 }

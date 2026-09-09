@@ -93,6 +93,10 @@ export interface RawEdge {
   source: string; // resolved node id
   relation: Relation;
   file: string; // the file this edge originates in (scopes name resolution)
+  /** Unity tier only: the asset guid of a `{fileID, guid, type}` reference
+   * (`m_Script` / `m_Mesh` / `m_SourcePrefab`). resolve.ts maps it through the
+   * `.meta` guid index; unmapped guids become `unresolved:<guid>` targets. */
+  unityGuid?: string;
   targetId?: string; // already-resolved target (contains)
   specifier?: string; // module path to resolve (imports / imported-symbol references)
   name?: string; // symbol name to resolve (extends/implements/calls)

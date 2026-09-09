@@ -11,6 +11,7 @@ import { upsertSection } from './sections.js';
 import { registerMcpConfigs, type McpWrite } from './mcp-config.js';
 import { installCodexHooks } from './codex-hooks.js';
 import { installCursorHooks } from './cursor-hooks.js';
+import { installMuseHooks } from './muse-hooks.js';
 import type { ConfigWrite } from './config-write.js';
 import { installAntigravitySkill } from './antigravity.js';
 import { installProjectAgentSkill } from './project-agents.js';
@@ -91,6 +92,13 @@ export function runHostsInit(
     opts.hooks === false || !selected.some((h) => h.id === 'cursor')
       ? []
       : installCursorHooks(repo);
+  // Muse's hooks are repo-local (.muse/hooks.json), matching the Cursor-only,
+  // no-global posture — so --no-global does NOT suppress them; only --no-hooks does.
+  // (Muse's MCP registration IS user-level, so --no-global still suppresses that half.)
+  const museHooks =
+    opts.hooks === false || !selected.some((h) => h.id === 'muse')
+      ? []
+      : installMuseHooks(repo);
   // Antigravity's skill is a global write too, so --no-global suppresses it as well.
   const antigravitySkill =
     opts.global === false || !selected.some((h) => h.id === 'antigravity')
@@ -109,6 +117,6 @@ export function runHostsInit(
     skipped,
     unknown,
     mcp,
-    hooks: [...hooks, ...cursorHooks, ...antigravitySkill, ...projectAgentSkill, ...dshSkill],
+    hooks: [...hooks, ...cursorHooks, ...museHooks, ...antigravitySkill, ...projectAgentSkill, ...dshSkill],
   };
 }

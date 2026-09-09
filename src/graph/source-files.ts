@@ -16,15 +16,22 @@ import { genericLangOf, genericExtensions } from "./generic.js";
 import { containerLangOf, containerExtensions } from "./container.js";
 import { ansibleClaims, ansibleExtensions } from "./ansible.js";
 import { loadLanguagePacks, loadNamespaces } from "./packs.js";
+import { unityLangOf, unityExtensions } from "./unity.js";
 
-/** Every extension graft has a parser for (depth + breadth + container + ansible), sorted
- * and de-duped — the authoritative answer to "what does `-e` actually support". */
+/** Every extension graft has a parser for (depth + breadth + container + ansible + Unity),
+ * sorted and de-duped — the authoritative answer to "what does `-e` actually support". */
 export function supportedExtensions(root?: string): string[] {
   // A repo's language packs count as supported the moment `-e` is validated, which
   // is before any walk has loaded them — so load here too (idempotent per root).
   if (root) loadLanguagePacks(root);
   return [
-    ...new Set([...depthExtensions(), ...genericExtensions(), ...containerExtensions(), ...ansibleExtensions()]),
+    ...new Set([
+      ...depthExtensions(),
+      ...genericExtensions(),
+      ...containerExtensions(),
+      ...ansibleExtensions(),
+      ...unityExtensions(),
+    ]),
   ].sort();
 }
 
@@ -84,16 +91,21 @@ export function listSourceFiles(
   // → namespace `Matrix` → its directory), read once per root for the resolver.
   loadNamespaces(root, repoFiles);
   // A file is a source file if a depth-tier grammar (languageOf), a breadth-tier
-  // grammar (genericLangOf), a container (containerLangOf) or the Ansible tier
-  // (ansibleClaims) claims its extension. All four must agree here or `build` and
-  // `check` would enumerate different sets. Ansible claims `.yml`/`.yaml` on the
-  // extension alone and decides for real from the content — a non-Ansible YAML
-  // file is walked, parsed, and then yields zero nodes.
+  // grammar (genericLangOf), a container (containerLangOf), the Ansible tier
+  // (ansibleClaims), or the Unity tier (unityLangOf) claims its extension. All
+  // five must agree here or `build` and `check` would enumerate different sets.
+  // Ansible claims `.yml`/`.yaml` on the extension alone and decides for real
+  // from the content — a non-Ansible YAML file is walked, parsed, and then
+  // yields zero nodes.
   return filterByOnlyDirs(
     repoFiles.filter(
       (f) =>
         !f.startsWith(outDir) &&
-        (languageOf(f) !== null || genericLangOf(f) !== null || containerLangOf(f) !== null || ansibleClaims(f)),
+        (languageOf(f) !== null ||
+          genericLangOf(f) !== null ||
+          containerLangOf(f) !== null ||
+          ansibleClaims(f) ||
+          unityLangOf(f) !== null),
     ),
     root,
     onlyDirs,

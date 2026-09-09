@@ -168,11 +168,17 @@ function emit(eventName: string, additionalContext: string): void {
  *     as a repo-relative path — resolved against `dir` here. Take the first
  *     Add/Update target; that one file is enough to mark the graph dirty and
  *     draw a blast radius (the sync re-checks the whole tree anyway).
- * Returns null when neither shape yields a path, so the hook stays a clean no-op.
+ *   - Muse (`edit_file`) names it as `tool_input.path` (absolute in the
+ *     observed payload; resolved against `dir` when relative, like Codex).
+ * Returns null when no shape yields a path, so the hook stays a clean no-op.
  */
 export function editedFilePath(input: any, dir: string): string | null {
   const direct = input?.tool_input?.file_path;
   if (typeof direct === 'string' && direct.trim()) return direct;
+  const musePath = input?.tool_input?.path;
+  if (typeof musePath === 'string' && musePath.trim()) {
+    return isAbsolute(musePath) ? musePath : join(dir, musePath);
+  }
   const cmd = input?.tool_input?.command;
   if (typeof cmd === 'string' && cmd) {
     const m = /^\*\*\*\s+(?:Add|Update)\s+File:\s+(.+?)\s*$/m.exec(cmd);

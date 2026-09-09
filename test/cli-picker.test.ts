@@ -1,5 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+
+// The MCP launch command is resolved from PATH at init time; pin it to the npx
+// form so these expectations are the same on every machine (and so a graft on
+// PATH doesn't turn every planInit probe into a seconds-long CLI spawn).
+process.env.GRAFT_MCP_NPX = '1';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
@@ -196,7 +201,7 @@ test('formatPlan separates repo writes from machine-wide ones', () => {
 test('formatPlan omits the machine-wide section when there is nothing global', () => {
   // Cursor, not Claude Code: the claude layer now always carries three writes under
   // `~/.claude` (src/hosts/claude-global.ts), so it can no longer stand in for a
-  // repo-only selection. Cursor is one — `.cursor/rules/` plus `.cursor/mcp.json`.
+  // repo-only selection. Cursor is one — the canonical skill plus `.cursor/mcp.json`.
   const repo = fresh(); const home = fullHome();
   const text = formatPlan(planInit(repo, { home }), ['cursor'], repo, home, false);
   assert.doesNotMatch(text, /affects ALL repos/);
