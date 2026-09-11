@@ -8,6 +8,8 @@
  */
 import { join } from 'node:path';
 import { instructionBody, cursorRule, kiroSteering, windsurfRule } from './instructions.js';
+import { dshInstructionBody } from './dsh.js';
+import { DSH_MARKERS, type Markers } from './sections.js';
 import { skillTemplate } from '../claude/skill-template.js';
 
 export interface DetectProbe {
@@ -23,6 +25,14 @@ export interface HostTarget {
   /** Target file, relative to the repo root. */
   relPath: string;
   content(): string;
+  /**
+   * For `kind: 'section'`, the fence this host owns. Omitted means the shared
+   * `graft:start` pair, which is right for every AGENTS.md host that writes the
+   * same body (agents, hermes, antigravity — whichever runs last is still
+   * correct). A host whose body genuinely differs must bring its own pair, or
+   * the two would silently overwrite each other in a repo that wires both.
+   */
+  markers?: Markers;
   detect(probe: DetectProbe): boolean;
 }
 
@@ -165,6 +175,22 @@ export const HOSTS: HostTarget[] = [
       p.dirExists(join(p.home, '.factory')) ||
       p.dirExists(join(p.home, '.pi')) ||
       p.dirExists(join(p.repo, '.agents')),
+  },
+  {
+    id: 'dsh',
+    name: 'DeepSeek Harness (DSH)',
+    kind: 'section',
+    relPath: 'AGENTS.md',
+    content: dshInstructionBody,
+    // Its own fence: DSH's body teaches the six native `graft_*` tools, while
+    // every other AGENTS.md host writes the CLI-oriented body. See DSH_MARKERS.
+    markers: DSH_MARKERS,
+    // `.dsh/` in the repo is DSH's project config root and `~/.dsh` is its user
+    // root, so either one means the user runs DSH. Deliberately not `AGENTS.md`
+    // alone: every Codex-style host reads that file too. The companion skill
+    // write (`.dsh/skills/graft/SKILL.md`) lives in `./dsh.js`, not in this
+    // entry's `relPath` — see that module for why the split is deliberate.
+    detect: (p) => p.dirExists(join(p.repo, '.dsh')) || p.dirExists(join(p.home, '.dsh')),
   },
 ];
 

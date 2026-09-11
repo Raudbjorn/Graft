@@ -322,7 +322,7 @@ test('mergeGraftSettings stays idempotent over repeated runs', () => {
 
 test('a shared AGENTS.md is spared when any host that writes it is kept', () => {
   const d = fresh();
-  // Three registry hosts name AGENTS.md: agents, hermes, antigravity.
+  // Four registry hosts name AGENTS.md: agents, hermes, antigravity, dsh.
   const agents = write(d, 'AGENTS.md', `# Notes\n\n${BLOCK}\n`);
   runRetract(d, { apply: true, global: false, exclude: ['agents'] });
   assert.ok(readFileSync(agents, 'utf8').includes('graft:start'),

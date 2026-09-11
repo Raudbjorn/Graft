@@ -32,6 +32,7 @@ import { mcpTargets, stripTomlSection } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { projectAgentSkillTargets } from './project-agents.js';
+import { dshSkillTargets } from './dsh.js';
 import { claudeGlobalTargets } from './claude-global.js';
 import { claudeTargets } from '../claude/init.js';
 import { isGraftAllowEntry, isGraftFooterRegex } from '../claude/settings-merge.js';
@@ -363,11 +364,13 @@ function targets(repo: string, opts: RetractOpts): Target[] {
    * Paths a *kept* host also writes, which must survive even though some other,
    * unselected host names them too.
    *
-   * Three hosts share `AGENTS.md` (agents, hermes, antigravity). Excluding by host
-   * id alone would strip that shared block on behalf of a host nobody selected,
-   * and the only reason the end state came out right was that `init` happened to
-   * rewrite it immediately afterwards. Exclude by path as well, so retraction
-   * never depends on what runs next.
+   * Four hosts share `AGENTS.md` (agents, hermes, antigravity, dsh). Excluding by
+   * host id alone would strip that shared file's blocks on behalf of a host
+   * nobody selected, and the only reason the end state came out right was that
+   * `init` happened to rewrite it immediately afterwards. Exclude by path as
+   * well, so retraction never depends on what runs next. (DSH writes its own
+   * `graft:dsh:*` fence inside that file, so keeping dsh must spare it for the
+   * same reason the other three do.)
    */
   const keptPaths = new Set<string>();
   for (const host of HOSTS) {
@@ -380,6 +383,7 @@ function targets(repo: string, opts: RetractOpts): Target[] {
   }
   if (exclude.has('agents')) for (const t of hookTargets(home)) keptPaths.add(t.path);
   if (exclude.has('antigravity')) for (const t of antigravitySkillTargets(home)) keptPaths.add(t.path);
+  if (exclude.has('dsh')) for (const t of dshSkillTargets(repo)) keptPaths.add(t.path);
 
   /** Queue a target unless a kept host owns that path, or it's already queued. */
   const seen = new Set<string>();
@@ -408,6 +412,14 @@ function targets(repo: string, opts: RetractOpts): Target[] {
       hostId: 'legacy', path, what: legacy.what, scope: 'repo',
       run: (a) => (legacy.kind === 'owned' ? removeFile(path, a) : stripSection(path, a)),
     });
+  }
+
+  // 1c. DSH's skill file: repo-local, but not the registry entry's own `relPath`
+  //     (that one is the shared AGENTS.md section stripped above).
+  if (!exclude.has('dsh')) {
+    for (const t of dshSkillTargets(repo)) {
+      add({ hostId: t.hostId, path: t.path, what: t.what, scope: 'repo', run: (a) => removeFile(t.path, a) });
+    }
   }
 
   // 2. MCP registrations. Asking for every host id at once yields the union of

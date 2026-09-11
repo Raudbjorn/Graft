@@ -16,6 +16,7 @@ import { hookTargets } from './codex-hooks.js';
 import { cursorHookTargets } from './cursor-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { projectAgentSkillTargets } from './project-agents.js';
+import { dshSkillTargets } from './dsh.js';
 import { claudeTargets } from '../claude/init.js';
 import { claudeGlobalTargets } from './claude-global.js';
 
@@ -87,6 +88,9 @@ export function planInit(repo: string, opts: { home?: string; ids?: string[]; mc
         ...(host.id === 'cursor' ? cursorHookTargets(repo) : []),
         ...(host.id === 'antigravity' ? antigravitySkillTargets(home) : []),
         ...(host.id === 'project-agents' ? projectAgentSkillTargets(repo) : []),
+        // DSH's skill is repo-local, so `--no-global` never suppresses it; only
+        // the AGENTS.md section above is part of the registry entry itself.
+        ...(host.id === 'dsh' ? dshSkillTargets(repo) : []),
       ],
     })),
   ];

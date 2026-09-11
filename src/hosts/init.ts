@@ -14,6 +14,7 @@ import { installCursorHooks } from './cursor-hooks.js';
 import type { ConfigWrite } from './config-write.js';
 import { installAntigravitySkill } from './antigravity.js';
 import { installProjectAgentSkill } from './project-agents.js';
+import { installDshSkill } from './dsh.js';
 
 export interface HostsInitResult {
   written: { id: string; path: string; action: string }[];
@@ -71,7 +72,7 @@ export function runHostsInit(
     const action =
       host.kind === 'owned'
         ? writeOwned(path, host.content())
-        : upsertSection(path, host.content()).action;
+        : upsertSection(path, host.content(), host.markers).action;
     written.push({ id: host.id, path, action });
   }
   const skipped = HOSTS.filter((h) => !selected.includes(h)).map((h) => h.id);
@@ -100,5 +101,14 @@ export function runHostsInit(
   const projectAgentSkill = !selected.some((h) => h.id === 'project-agents')
     ? []
     : installProjectAgentSkill(repo);
-  return { written, skipped, unknown, mcp, hooks: [...hooks, ...cursorHooks, ...antigravitySkill, ...projectAgentSkill] };
+  // DSH's skill is repo-local (.dsh/skills/), so --no-global does NOT suppress
+  // it — the same posture as Cursor's repo-local hooks.
+  const dshSkill = !selected.some((h) => h.id === 'dsh') ? [] : installDshSkill(repo);
+  return {
+    written,
+    skipped,
+    unknown,
+    mcp,
+    hooks: [...hooks, ...cursorHooks, ...antigravitySkill, ...projectAgentSkill, ...dshSkill],
+  };
 }

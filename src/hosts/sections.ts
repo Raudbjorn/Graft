@@ -21,6 +21,19 @@ export const END = '<!-- graft:end -->';
 export const BRAIN_START = '<!-- graft:brain:start -->';
 export const BRAIN_END = '<!-- graft:brain:end -->';
 
+/**
+ * DSH's instruction block gets its own fence rather than sharing
+ * `GRAFT_MARKERS` with the agents/hermes/antigravity hosts.
+ *
+ * Those three write byte-identical, CLI-oriented bodies, so whichever of them
+ * runs last leaves the file correct. DSH's body teaches the six first-class
+ * `graft_*` tools instead of the CLI, so in a repo that wires both, one body
+ * would silently overwrite the other. Separate markers keep the two blocks
+ * addressable, and `retract` strips both because both are in `ALL_MARKERS`.
+ */
+export const DSH_START = '<!-- graft:dsh:start -->';
+export const DSH_END = '<!-- graft:dsh:end -->';
+
 /** One addressable managed region in a file the user owns. */
 export interface Markers {
   start: string;
@@ -29,9 +42,10 @@ export interface Markers {
 
 export const GRAFT_MARKERS: Markers = { start: START, end: END };
 export const BRAIN_MARKERS: Markers = { start: BRAIN_START, end: BRAIN_END };
+export const DSH_MARKERS: Markers = { start: DSH_START, end: DSH_END };
 
 /** Every managed region graft may own in a user-owned file. */
-export const ALL_MARKERS: Markers[] = [GRAFT_MARKERS, BRAIN_MARKERS];
+export const ALL_MARKERS: Markers[] = [GRAFT_MARKERS, BRAIN_MARKERS, DSH_MARKERS];
 
 export type UpsertAction = 'created' | 'appended' | 'replaced' | 'unchanged';
 
