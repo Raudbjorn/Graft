@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **C/C++ promoted to the full-fidelity depth tier.** Was breadth-tier
+  (signature-only, bare-name call resolution); now a hand-written extractor
+  types `this->`/`obj->` receivers from declared locals, parameters, and
+  same-file fields, resolves quoted `#include`s into an include-closure that
+  breaks repo-wide name ties, and matches namespace-qualified calls
+  (`game::spawn(1)`) against each symbol's namespace path. Still heuristic —
+  `graft build --lsp` with clangd remains the precise option.
+
 ### Fixed
 
 - **`graft init --no-mcp` / `--no-hooks` were ignored for Claude Code.** Those

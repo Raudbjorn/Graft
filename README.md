@@ -218,11 +218,18 @@ compiler-grade layer — all `$0` and deterministic (no model, no key):
   functions, S3/S4/R6 classes and methods, roxygen `@export`,
   `library()`/`source()` imports), **C#** (classes, structs, interfaces, records,
   enums; interface inheritance and class/struct implementation, field/`this.field`
-  and typed-parameter receiver resolution, `using` imports).
+  and typed-parameter receiver resolution, `using` imports), **C/C++** (one
+  grammar under a single "c/c++" label, since `.h` can't be attributed to
+  either language by name alone — functions, out-of-class `Type::method`
+  definitions, classes/structs/enums; `this->`/`obj->`/declared-local/field
+  receiver typing, quoted `#include` closure, and namespace-qualified calls
+  break the ties a plain name-uniqueness rule would otherwise drop — still
+  heuristic, not full type inference, so `graft build --lsp` with clangd
+  remains the precise option).
 
 - **Broad** — symbols (functions, classes, methods, types, …) plus name-resolved
   call edges via a generic tree-sitter extractor, one grammar per language:
-  **Rust, C, C++, Ruby, Scala, Elixir, Solidity,
+  **Rust, Ruby, Scala, Elixir, Solidity,
   OCaml, Zig, Dart, Clojure, Nix, Lua, Luau**.
   **Bash** (`.sh`, `.bash`) also uses this tier for function symbols;
   Bash call edges and extensionless shell scripts are not yet supported.

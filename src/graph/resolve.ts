@@ -52,13 +52,14 @@ const SWIFT_CTOR_KINDS: Kind[] = ["class", "struct", "enum"];
  * the more confident the old code was that it had found the right target.
  *
  * Only real interop is grouped here. TS/TSX/JS import each other freely; Kotlin,
- * Scala and Clojure compile against Java on one classpath; C and C++ share
- * headers. Everything else stands alone.
+ * Scala and Clojure compile against Java on one classpath. Everything else
+ * stands alone — including C/C++, which the depth tier parses under one
+ * single "cpp" language identity in the first place (see extract.ts's
+ * EXTENSIONS), so C and C++ never need a family entry to reach each other.
  */
 const FAMILIES: ReadonlyArray<readonly string[]> = [
   ["typescript", "tsx"],
   ["java", "kotlin", "scala", "clojure"],
-  ["c", "cpp"],
 ];
 const FAMILY_OF = new Map<string, string>();
 for (const group of FAMILIES) for (const lang of group) FAMILY_OF.set(lang, group[0]);
@@ -261,6 +262,48 @@ export function resolveEdges(
     if (m) unityGuidMap.set(m[1], n.path.slice(0, -".meta".length));
   }
 
+  // C++ visibility: all file ids for suffix-matching include paths, per-file
+  // resolved includes, and the .h ↔ .cpp stem pairing that stands in for "the
+  // impl of this header" (prototypes are not nodes, so a header's definitions
+  // live in its stem-paired implementation file). Feeds the repo-wide-ambiguity
+  // fallback below: a same-named free function elsewhere in the repo is a real
+  // candidate only if this file's #include closure (or its own impl file) can
+  // actually see it.
+  const isCppFile = (path: string): boolean => languageOf(path) === "cpp";
+  const cppIncludes = new Map<string, string[]>();
+  for (const e of rawEdges) {
+    if (e.relation !== "imports" || !e.specifier || !isCppFile(e.file)) continue;
+    const target = resolveCInclude(e.specifier, e.file, byId, cFilesBySuffix);
+    if (byId.has(target)) push(cppIncludes, e.file, target);
+  }
+  const cppStemImpls = new Map<string, string[]>();
+  for (const n of nodes) {
+    if (n.kind !== "file" || !isCppFile(n.path) || /\.(h|hpp|hh|hxx)$/i.test(n.path)) continue;
+    push(cppStemImpls, posix.basename(toPosixPath(n.path)).replace(/\.[^.]+$/, ""), n.path);
+  }
+  const cppClosureCache = new Map<string, Set<string>>();
+  const cppClosureOf = (file: string): Set<string> => {
+    const cached = cppClosureCache.get(file);
+    if (cached) return cached;
+    const seenFiles = new Set<string>([file]);
+    const frontier = [file];
+    while (frontier.length) {
+      for (const inc of cppIncludes.get(frontier.pop()!) ?? []) {
+        if (!seenFiles.has(inc)) {
+          seenFiles.add(inc);
+          frontier.push(inc);
+        }
+      }
+    }
+    for (const f of [...seenFiles]) {
+      for (const impl of cppStemImpls.get(posix.basename(toPosixPath(f)).replace(/\.[^.]+$/, "")) ?? []) {
+        seenFiles.add(impl);
+      }
+    }
+    cppClosureCache.set(file, seenFiles);
+    return seenFiles;
+  };
+
   const out: EdgeV1[] = [];
   const seen = new Set<string>();
   const add = (source: string, target: string, relation: Relation, confidence: EdgeV1["confidence"]) => {
@@ -379,6 +422,16 @@ export function resolveEdges(
           add(e.source, hit.id, "calls", hit.confidence);
           continue;
         }
+        // A C++ qualifier may name a NAMESPACE (`game::spawn(1)`), which owns no
+        // methods, so the owner-qualified index above cannot match it. Resolve
+        // against function nodes whose `ns` path ends in the qualifier instead;
+        // ambiguity still drops rather than guesses.
+        if (isCppFile(e.file)) {
+          const inNs = (globalName.get(e.name!) ?? []).filter(
+            (n) => n.kind === "function" && n.ns && (n.ns === e.recvType || n.ns.endsWith(`.${e.recvType}`)),
+          );
+          if (inNs.length === 1) { add(e.source, inNs[0].id, "calls", "inferred"); continue; }
+        }
         // No owner-qualified match means the call is unresolved. A unique bare
         // method name is not evidence that this receiver has that method — a
         // name-fallback here was measured to HALVE call-edge precision (73%→37%
@@ -467,6 +520,28 @@ export function resolveEdges(
       }
       if (!hit && SWIFT_EXT.test(e.file)) {
         hit = resolveName(e.name!, e.file, SWIFT_CTOR_KINDS, perFileName, globalName);
+      }
+      if (!hit && isCppFile(e.file)) {
+        // Repo-wide ambiguity the uniqueness gate above must refuse can still be
+        // resolved honestly with more context: exactly one candidate visible in
+        // the calling file's #include closure, or — failing that — exactly one
+        // in the caller's own namespace (an unqualified call inside `namespace
+        // game` reaches game::helper without any include). Ambiguity at every
+        // level still drops — never guess.
+        const candidates = (globalName.get(e.name!) ?? []).filter((n) => n.kind === "function");
+        if (candidates.length > 1) {
+          const closure = cppClosureOf(e.file);
+          const visible = candidates.filter((n) => closure.has(n.path));
+          let pick = visible.length === 1 ? visible[0] : null;
+          if (!pick) {
+            const callerNs = byId.get(e.source)?.ns;
+            if (callerNs) {
+              const sameNs = candidates.filter((n) => n.ns === callerNs);
+              if (sameNs.length === 1) pick = sameNs[0];
+            }
+          }
+          if (pick) { add(e.source, pick.id, "calls", "inferred"); continue; }
+        }
       }
       if (hit) add(e.source, hit.id, "calls", hit.confidence); // drop unresolved calls (too noisy)
     }

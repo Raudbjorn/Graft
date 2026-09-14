@@ -59,6 +59,12 @@ export interface NodeV1 {
   // index) key off a stored field instead of re-deriving it by slicing `id`,
   // which breaks once ids can carry a dedup ordinal (`Cache.get~2`).
   owner?: string;
+  // C/C++ only: the enclosing namespace path ("game.ai" for a symbol nested in
+  // `namespace game { namespace ai { … } }`), absent everywhere else and for a
+  // C/C++ symbol at global scope. Namespaces mint no nodes of their own (see
+  // extract.ts's describeCpp), so this is the only record of nesting depth —
+  // resolve.ts's namespace-qualified call fallback is the sole consumer.
+  ns?: string;
 
   // location (Tier-1, deterministic)
   path: string; // repo-relative: "src/cache.ts"

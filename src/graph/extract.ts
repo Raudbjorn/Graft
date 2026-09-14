@@ -16,12 +16,17 @@ import Kotlin from "tree-sitter-kotlin";
 import Swift from "tree-sitter-swift";
 import PHP from "tree-sitter-php";
 import CSharp from "tree-sitter-c-sharp";
+import Cpp from "tree-sitter-cpp";
 import { basename } from "node:path";
 import { contentHash } from "../util/id.js";
-import { collectBindings, collectGoPackages, goReceiverVarOf, resolveRecvType, type FileBindings } from "./bindings.js";
+import {
+  collectBindings, collectGoPackages, cppDeclaratorName, goReceiverVarOf, resolveRecvType,
+  type FileBindings,
+} from "./bindings.js";
 import type { Kind, NodeV1, Relation } from "./types.js";
 
-export type Language = "typescript" | "tsx" | "python" | "go" | "java" | "kotlin" | "swift" | "php" | "r" | "csharp";
+export type Language =
+  | "typescript" | "tsx" | "python" | "go" | "java" | "kotlin" | "swift" | "php" | "r" | "csharp" | "cpp";
 
 /**
  * Extension → the tree-sitter grammar that parses it, and the label a human expects
@@ -59,6 +64,17 @@ const EXTENSIONS: ReadonlyArray<{ ext: string; grammar: Language; label: string 
   // `entryFor` lower-cases the path before matching, so this one entry covers
   // both `.R` (the conventional case in real R codebases) and `.r`.
   { ext: ".r", grammar: "r", label: "r" },
+  // One grammar and one label for the whole C family: the cpp grammar parses C,
+  // and `.h` can't be attributed to either language from its name alone, so a
+  // split label would misreport every C repo's headers (or every C++ one's).
+  { ext: ".cpp", grammar: "cpp", label: "c/c++" },
+  { ext: ".cxx", grammar: "cpp", label: "c/c++" },
+  { ext: ".cc", grammar: "cpp", label: "c/c++" },
+  { ext: ".hpp", grammar: "cpp", label: "c/c++" },
+  { ext: ".hxx", grammar: "cpp", label: "c/c++" },
+  { ext: ".hh", grammar: "cpp", label: "c/c++" },
+  { ext: ".c", grammar: "cpp", label: "c/c++" },
+  { ext: ".h", grammar: "cpp", label: "c/c++" },
 ];
 
 function entryFor(path: string): (typeof EXTENSIONS)[number] | undefined {
@@ -286,6 +302,10 @@ const CS_KINDS: Record<string, Kind> = {
  * but it is an underlying value type rather than a graph heritage edge. */
 const CS_TYPE_KINDS: ReadonlySet<Kind> = new Set<Kind>(["class", "struct", "interface"]);
 
+// C/C++: empty on purpose — every definition shape depends on its declarator
+// (or on having a body at all), so describeCpp() resolves them dynamically.
+const CPP_KINDS: Record<string, Kind> = {};
+
 const KINDS_BY_LANG: Record<Language, Record<string, Kind>> = {
   typescript: TS_KINDS,
   tsx: TS_KINDS,
@@ -297,6 +317,7 @@ const KINDS_BY_LANG: Record<Language, Record<string, Kind>> = {
   swift: SWIFT_KINDS,
   php: PHP_KINDS,
   csharp: CS_KINDS,
+  cpp: CPP_KINDS,
 };
 
 /**
@@ -324,6 +345,7 @@ const CALL_TYPES: Record<Language, ReadonlySet<string>> = {
   ]),
   r: new Set(["call"]),
   csharp: new Set(["invocation_expression"]),
+  cpp: new Set(["call_expression"]),
 };
 
 const FUNCTION_VALUE_TYPES = new Set([
@@ -347,6 +369,7 @@ const GRAMMARS: Record<Language, unknown> = {
   swift: Swift,
   php: PHP.php,
   csharp: CSharp,
+  cpp: Cpp,
 };
 
 export interface WalkCtx {
@@ -381,6 +404,11 @@ export interface WalkCtx {
   // for the method's whole body, only changing when a genuinely different
   // class is entered. Null outside any class, or for a class with no parent.
   rSuperClass: string | null;
+  // C++ only: the enclosing namespace path, [] elsewhere. Namespaces mint no
+  // node of their own (see describeCpp's doc comment), so this is the only
+  // record of nesting depth — it feeds NodeV1.ns and the namespace-qualified
+  // call fallback in resolve.ts.
+  cppNamespace: string[];
 }
 
 /** A definition we're about to emit, normalized across the shapes we handle. */
@@ -454,6 +482,7 @@ export function extractFile(rel: string, source: string, lang: Language): Extrac
     rR6Access: null,
     rGenerics,
     rSuperClass: null,
+    cppNamespace: [],
   };
   // Every id minted this file, seeded with the file node's own id (`rel`) so a
   // top-level definition can never collide with it. Threaded as its own
@@ -633,7 +662,9 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
                       ? phpExported(node)
                       : ctx.lang === "csharp"
                         ? csExported(node, ctx)
-                        : tsExported(node),
+                        : ctx.lang === "cpp"
+                          ? true // no module/visibility system at Tier-1
+                          : tsExported(node),
       origin: "ast",
       body_hash: contentHash(desc.hashNode.text),
       body_text: searchBody(desc.hashNode.text),
@@ -643,22 +674,30 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
       ...(owner !== undefined ? { owner } : {}),
       ...(desc.arity !== undefined ? { arity: desc.arity } : {}),
       ...(desc.variadic ? { variadic: true } : {}),
+      ...(ctx.cppNamespace.length > 0 ? { ns: ctx.cppNamespace.join(".") } : {}),
     });
     // structural containment
     edges.push({ source: ctx.parentId, relation: "contains", targetId: id, file: ctx.rel });
     // class heritage — in Java an interface may also `extends`, and a record/enum
-    // may `implements`, so every type declaration is a heritage site, not just a class.
+    // may `implements`, so every type declaration is a heritage site, not just a
+    // class; in C++ a struct inherits too (it is a default-public class).
     const javaTypeDecl = ctx.lang === "java" && JAVA_TYPE_KINDS.has(desc.kind);
     const kotlinTypeDecl = ctx.lang === "kotlin" && KOTLIN_TYPE_KINDS.has(desc.kind);
     const swiftTypeDecl = ctx.lang === "swift" && SWIFT_TYPE_KINDS.has(desc.kind);
     const csharpTypeDecl = ctx.lang === "csharp" && CS_TYPE_KINDS.has(desc.kind);
-    if (desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl || csharpTypeDecl)
+    const cppStructDecl = ctx.lang === "cpp" && desc.kind === "struct";
+    if (desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl || csharpTypeDecl || cppStructDecl)
       edges.push(...heritageEdges(node, id, ctx));
     if (ctx.lang === "php") edges.push(...phpAttributeReferenceEdges(node, id, ctx));
     if (ctx.lang === "java") edges.push(...javaAnnotationReferenceEdges(node, id, ctx));
 
+    // A C++ struct is a class with default-public members, so its inline methods
+    // need an owner just like a class's (desc.owner — only ever set for C++
+    // out-of-class definitions — makes `this->x()` inside `void Physics::step()
+    // { … }` resolve against Physics, whose name lives in the declarator, not in
+    // any ancestor, via the desc.owner fallback below).
     const enclosingClass =
-      desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl || csharpTypeDecl
+      desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl || csharpTypeDecl || cppStructDecl
         ? desc.name
         : isGoMethod
           ? goReceiverType(node)
@@ -695,6 +734,16 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
           : ctx.rSuperClass,
     };
     walkNamedChildren(node.namedChildren, childCtx, out, edges, minted);
+    return;
+  }
+
+  // C++ namespaces don't emit nodes (members keep bare names — a namespace is
+  // reopenable and has no single defining span), but membership is tracked so
+  // nodes can carry their `ns` path for the namespace-qualified call fallback.
+  if (ctx.lang === "cpp" && node.type === "namespace_definition") {
+    const nsName = node.childForFieldName("name")?.text;
+    const nsCtx = nsName ? { ...ctx, cppNamespace: [...ctx.cppNamespace, nsName] } : ctx;
+    for (const child of node.namedChildren) walk(child, nsCtx, out, edges, minted);
     return;
   }
 
@@ -754,7 +803,11 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
       consumedCallee === "R6Class" || (consumedCallee === "list" && rIsMixinContainer(node));
     const callee = isConsumedRClassCall ? null : calleeName(node, ctx.lang, ctx);
     if (callee) {
-      const recvType = resolveRecvType(callee.receiver, ctx);
+      // C++ `Physics::step(...)` names the receiver TYPE directly in the callee
+      // syntax (a qualifier, not a variable) — calleeName resolves it inline and
+      // returns it as recvType, bypassing resolveRecvType's variable-binding
+      // lookup entirely (there is no variable to look up).
+      const recvType = callee.recvType ?? resolveRecvType(callee.receiver, ctx);
       // Go: `pkg.Func()` where `pkg` is an imported package (and not a typed local
       // shadowing it) is a package-qualified free-function call, not a member call.
       // Resolve it by function name like a bare `Func()` — otherwise the resolver
@@ -1155,6 +1208,7 @@ function describe(node: Parser.SyntaxNode, ctx: WalkCtx): DefDescriptor | null {
   if (ctx.lang === "kotlin") return describeKotlin(node, ctx);
   if (ctx.lang === "swift") return describeSwift(node, ctx);
   if (ctx.lang === "csharp") return describeCSharp(node, ctx);
+  if (ctx.lang === "cpp") return describeCpp(node, ctx);
 
   // PHP closures: `$h = function () {…}` / `fn() => …`, and bare callbacks
   // (`$routes->get('/x', function () {…})`). Captured as function nodes so a
@@ -1946,6 +2000,60 @@ function describeCSharp(node: Parser.SyntaxNode, _ctx: WalkCtx): DefDescriptor |
   return { name, kind, headerEnd, hashNode: node };
 }
 
+/** C/C++ definition shapes: function definitions (free, inline-in-class, and
+ * out-of-class `Type::method`), plus named class/struct/enum bodies.
+ * Declarations without a body — prototypes, forward declarations, extern
+ * declarations — are intentionally NOT definitions: a header's
+ * `void update(float);` would otherwise shadow the one real definition under
+ * the same name in every skeleton/grep result.
+ *
+ * `namespace_definition` and `template_declaration` need no case of their own:
+ * describe() returning null makes the walk descend, so the definitions inside
+ * are found with their own spans (a template symbol's span excludes the
+ * `template<…>` header — a bounded imprecision, traded for never emitting the
+ * same definition twice). */
+function describeCpp(node: Parser.SyntaxNode, ctx: WalkCtx): DefDescriptor | null {
+  if (node.type === "function_definition") {
+    const named = cppDeclaratorName(node.childForFieldName("declarator"));
+    if (!named) return null;
+    const body = node.childForFieldName("body");
+    const headerEnd = body ? body.startIndex : node.endIndex;
+    // A qualifier (`Physics::step`) or an enclosing class/struct body makes it a
+    // method; the qualifier also names the owner the walk context can't see.
+    if (named.qualifier) {
+      return {
+        name: named.name,
+        idName: `${named.qualifier}.${named.name}`,
+        kind: "method",
+        owner: named.qualifier,
+        headerEnd,
+        hashNode: node,
+      };
+    }
+    const inType = ctx.enclosingKind === "class" || ctx.enclosingKind === "struct";
+    return { name: named.name, kind: inType ? "method" : "function", headerEnd, hashNode: node };
+  }
+
+  const kind: Kind | null =
+    node.type === "class_specifier"
+      ? "class"
+      : node.type === "struct_specifier"
+        ? "struct"
+        : node.type === "enum_specifier"
+          ? "enum"
+          : null;
+  if (kind) {
+    // Both name AND body required: `class Physics;` (forward declaration) and an
+    // anonymous `struct { … }` are not definitions we can index.
+    const name = node.childForFieldName("name")?.text;
+    const body = node.childForFieldName("body");
+    if (!name || !body) return null;
+    return { name, kind, headerEnd: body.startIndex, hashNode: node };
+  }
+
+  return null;
+}
+
 /** Java visibility: `public` (or `protected`) on the declaration's own modifier list.
  * A package-private or private member is not part of the API surface. Read off the
  * `modifiers` child's tokens, ignoring annotations, which live in the same node. */
@@ -2198,6 +2306,17 @@ function heritageEdges(node: Parser.SyntaxNode, classId: string, ctx: WalkCtx): 
     }
     return edges;
   }
+  if (ctx.lang === "cpp") {
+    // `class RigidBody : public Body { ... }` — base_class_clause children are
+    // the base type names (access specifiers are unnamed siblings).
+    const clause = node.namedChildren.find((c) => c.type === "base_class_clause");
+    for (const t of clause?.namedChildren ?? []) {
+      if (t.type === "type_identifier") {
+        edges.push({ source: classId, relation: "extends", name: t.text, file: ctx.rel });
+      }
+    }
+    return edges;
+  }
   const heritage = node.namedChildren.find((c) => c.type === "class_heritage");
   for (const clause of heritage?.namedChildren ?? []) {
     const relation: Relation | null =
@@ -2271,7 +2390,7 @@ function calleeName(
   node: Parser.SyntaxNode,
   lang: Language,
   ctx?: WalkCtx,
-): { name: string; viaMember: boolean; receiver?: string; kinds?: Kind[] } | null {
+): { name: string; viaMember: boolean; receiver?: string; kinds?: Kind[]; recvType?: string } | null {
   // Java first: `method_invocation` has NO `function` field (it splits the callee
   // into `object` + `name`), so the shared lookup below would return null for every
   // Java call site and the language would extract nodes with no call edges at all.
@@ -2366,6 +2485,30 @@ if (lang === "kotlin") {
       return { name: fn.text, viaMember: true, receiver: "this" };
     }
     return { name: fn.text, viaMember: false };
+  }
+  if (lang === "cpp") {
+    // `obj.method()` / `ptr->tick()` / `this->applyGravity()` — the receiver
+    // TEXT only; resolveRecvType maps `this` to the enclosing class and drops
+    // everything else (no bindings-map lookup happens here — that's a separate
+    // pass), so an untracked receiver is captured then dropped, never guessed.
+    if (fn.type === "field_expression") {
+      const field = fn.childForFieldName("field");
+      const arg = fn.childForFieldName("argument");
+      const receiver = arg?.type === "this" ? "this" : arg?.type === "identifier" ? arg.text : undefined;
+      return field ? { name: field.text, viaMember: true, receiver } : null;
+    }
+    // `Physics::step(...)` — the qualifier IS the receiver type; innermost scope
+    // wins on a nested chain (`game::Physics::step` → Physics).
+    if (fn.type === "qualified_identifier") {
+      let recvType: string | undefined;
+      let n: Parser.SyntaxNode | null = fn;
+      while (n?.type === "qualified_identifier") {
+        recvType = n.childForFieldName("scope")?.text ?? recvType;
+        n = n.childForFieldName("name");
+      }
+      return n && recvType ? { name: n.text, viaMember: true, recvType } : null;
+    }
+    return null;
   }
   if (lang === "python" && fn.type === "attribute") {
     const a = fn.childForFieldName("attribute") ?? fn.namedChildren.at(-1);
@@ -2601,6 +2744,7 @@ if (lang === "kotlin") return node.type === "import_header";
   // PHP: one edge per imported symbol — the clause leaf inside a (possibly
   // grouped) `use A\B, C\D;` / `use A\{B, C};` declaration.
   if (lang === "php") return node.type === "namespace_use_clause";
+  if (lang === "cpp") return node.type === "preproc_include";
   return node.type === "import_statement" || node.type === "import_from_statement";
 }
 
@@ -2655,6 +2799,13 @@ function importSpecifier(node: Parser.SyntaxNode, lang: Language): string | null
     // For `using Alias = Namespace.Type`, the final named child is the target;
     // for ordinary/static usings it is the sole namespace/type child.
     return node.namedChildren.at(-1)?.text ?? null;
+  }
+  if (lang === "cpp") {
+    // Quoted includes only — `<...>` names a system header by convention, which
+    // can never be a repo file, and dangling edges to <cstdio> would be noise.
+    const path = node.childForFieldName("path");
+    if (path?.type !== "string_literal") return null;
+    return path.text.replace(/^"|"$/g, "");
   }
   const str = node.namedChildren.find((c) => c.type === "string");
   if (!str) return null;

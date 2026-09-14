@@ -72,8 +72,6 @@ export interface GenericLang {
 export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "rust", exts: [".rs"], wasm: "rust" },
   { name: "java", exts: [".java"], wasm: "java" },
-  { name: "c", exts: [".c", ".h"], wasm: "c" },
-  { name: "cpp", exts: [".cpp", ".cc", ".cxx", ".hpp", ".hh"], wasm: "cpp" },
   { name: "ruby", exts: [".rb"], wasm: "ruby" },
   // These ship a tags.scm (calls + symbols); ocaml/zig have none and use the
   // node-kind walker fallback (symbols only) — still one row, zero query.
@@ -341,11 +339,10 @@ export function extractGeneric(rel: string, source: string, langName: string): E
   } else {
     walkExtract(tree.rootNode as TsNode, mkDef); // no tags.scm → symbols only
   }
-  // The preprocessor is invisible to tags.scm, but in C/C++ a local `#include "x.h"`
-  // IS the dependency graph — capture it as a file→file import. Likewise a Rust
-  // `use crate::…` is an in-crate module dependency.
-  if (langName === "c" || langName === "cpp") extractIncludes(tree.rootNode as TsNode, rel, rawEdges);
-  else if (langName === "rust") extractUses(tree.rootNode as TsNode, rel, rawEdges);
+  // The preprocessor is invisible to tags.scm, but a Rust `use crate::…` is an
+  // in-crate module dependency the generic tags.scm can't see either (C/C++'s
+  // own `#include` equivalent moved to the depth tier with C/C++ itself).
+  if (langName === "rust") extractUses(tree.rootNode as TsNode, rel, rawEdges);
   else if (langName === "php") extractPhpUses(tree.rootNode as TsNode, rel, rawEdges);
   return { nodes, rawEdges };
 }
@@ -415,28 +412,6 @@ function rustUseModule(text: string): string | null {
   if (s !== "crate" && !s.startsWith("crate::")) return null; // only in-crate absolute imports
   if (s.includes("*")) return null; // glob — no single module target
   return s.replace(/^crate::?/, "").replace(/\s+/g, "").replace(/::/g, "/"); // "" = crate root
-}
-
-/** C/C++ `#include "header.h"` → a file→file `imports` raw edge. Only LOCAL includes
- * (quoted) are captured; system includes (`<stdio.h>`) are skipped — high volume, and
- * there is no in-repo target to navigate to. resolve.ts settles the quoted path to an
- * in-repo header (relative to the including file, else a unique path-suffix match), and
- * keeps it as an external string when it cannot — never a guessed edge. */
-function extractIncludes(root: TsNode, rel: string, rawEdges: RawEdge[]): void {
-  const visit = (n: TsNode): void => {
-    if (n.type === "preproc_include") {
-      const raw = n.childForFieldName?.("path")?.text ?? "";
-      if (raw.startsWith('"')) {
-        const spec = raw.replace(/^"|"$/g, "").trim();
-        if (spec) rawEdges.push({ source: rel, relation: "imports", specifier: spec, file: rel });
-      }
-    }
-    for (let i = 0; i < (n.namedChildCount ?? 0); i++) {
-      const c = n.namedChild?.(i);
-      if (c) visit(c);
-    }
-  };
-  visit(root);
 }
 
 /** tags.scm path: @definition.<kind> → nodes, @reference.call/@reference.send →
