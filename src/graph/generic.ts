@@ -26,6 +26,7 @@ import { createRequire } from "node:module";
 import { contentHash } from "../util/id.js";
 import type { Kind, NodeV1 } from "./types.js";
 import type { ExtractResult, RawEdge } from "./extract.js";
+import { extractPascal, readPascalWasm } from "./pascal.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -57,6 +58,13 @@ export interface GenericLang {
   /** Namespace → package directory (repo-relative posix, "" for the root), filled by
    * packs.ts `loadNamespaces` from the manifests above. */
   namespaceDirs?: Map<string, string>;
+  /** Pascal's wasm ships in-tree (no npm grammar package) — read directly rather
+   * than through requireWasm's tree-sitter-wasm package lookup. */
+  wasmBytes?: () => Buffer | null;
+  /** Set for a language whose extraction can't fit the generic tags-query walk
+   * (Pascal's case-insensitive symbol/call matching) — takes over from the
+   * generic walker entirely once the grammar is warm. */
+  extract?: (rel: string, source: string, root: TsNode) => ExtractResult;
 }
 
 /** The breadth registry. Add a row + a queries/<name>.scm to support a language.
@@ -85,6 +93,7 @@ export const GENERIC_LANGS: readonly GenericLang[] = [
   // instead of the tree-sitter-wasm package; see requireWasm below and
   // grammars/README.md.
   { name: "al", exts: [".al"], wasm: "al" },
+  { name: "pascal", exts: [".pas", ".dpr", ".dpk", ".inc"], wasm: "pascal", wasmBytes: readPascalWasm, extract: extractPascal },
 ];
 
 // Rows a language pack registered at runtime (packs.ts) — after the built-ins, so
@@ -132,7 +141,7 @@ const KIND: Record<string, Kind> = {
 
 // Loaded grammars + compiled tags queries, keyed by graft lang name. Populated by
 // warmGenericGrammars; read synchronously by extractGeneric.
-export interface Loaded { language: unknown; query: unknown | null }
+export interface Loaded { language: unknown; query: unknown | null; extract?: GenericLang["extract"] }
 const loaded = new Map<string, Loaded>();
 let tsMod: typeof import("web-tree-sitter") | null = null;
 let initPromise: Promise<void> | null = null;
@@ -188,7 +197,7 @@ export async function warmGenericGrammars(langNames: Iterable<string>): Promise<
   const { Language, Query } = tsMod;
   for (const name of need) {
     const row = allLangs().find((l) => l.name === name)!;
-    const bytes = requireWasm(row.wasm, row.wasmPath);
+    const bytes = row.wasmBytes?.() ?? requireWasm(row.wasm, row.wasmPath);
     if (!bytes) continue;
     try {
       const language = await Language.load(bytes);
@@ -197,7 +206,7 @@ export async function warmGenericGrammars(langNames: Iterable<string>): Promise<
       if (scm) {
         try { query = new Query(language, scm); } catch { query = null; }
       }
-      loaded.set(name, { language, query });
+      loaded.set(name, { language, query, extract: row.extract });
     } catch {
       /* grammar failed to instantiate — skip; files extract as file-only */
     }
@@ -295,6 +304,7 @@ export function extractGeneric(rel: string, source: string, langName: string): E
     throw new Error(`${langName} grammar threw: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!tree) return { nodes, rawEdges };
+  if (entry.extract) return entry.extract(rel, source, tree.rootNode as TsNode);
 
   const minted = new Set<string>([rel]);
   const lines = source.split("\n");

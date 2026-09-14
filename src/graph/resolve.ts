@@ -22,6 +22,8 @@ import { ansibleClaims } from "./ansible.js";
 const IMPORT_EXTS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py"];
 /** C/C++ source + header extensions, for resolving `#include` targets. */
 const C_EXT = /\.(c|h|cc|cpp|cxx|hpp|hh|hxx|inl|ipp|c\+\+|h\+\+)$/i;
+const PASCAL_EXT = /\.(pas|dpr|dpk|inc)$/i;
+
 /** Python source + stub extensions, for the constructor-call fallback below. */
 const PY_EXT = /\.pyi?$/i;
 /** What a bare Python call falls back to when no function of that name exists:
@@ -106,10 +108,14 @@ export function resolveEdges(
 ): EdgeV1[] {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const globalName = new Map<string, NodeV1[]>();
+  const globalNameFolded = new Map<string, NodeV1[]>();
   const perFileName = new Map<string, Map<string, NodeV1[]>>();
+  const perFileNameFolded = new Map<string, Map<string, NodeV1[]>>();
   // Owner-qualified method index: "Owner.method" → candidate method nodes, for
   // typed member-call resolution (recvType + name → a specific class's method).
   const ownerMethod = new Map<string, NodeV1[]>();
+  const ownerMethodFolded = new Map<string, NodeV1[]>();
+  const pascalModules = new Map<string, NodeV1[]>();
   // Go package resolution: dir (posix) → its `.go` file node ids, for import mapping.
   const goFilesByDir = new Map<string, string[]>();
   // Java package resolution: a file's package-path suffix (`com/acme/Foo.java`) → its
@@ -168,9 +174,21 @@ export function resolveEdges(
     let fileMap = perFileName.get(n.path);
     if (!fileMap) perFileName.set(n.path, (fileMap = new Map()));
     push(fileMap, n.name, n);
+    if (PASCAL_EXT.test(n.path)) {
+      push(globalNameFolded, n.name.toLocaleLowerCase("en-US"), n);
+      let foldedFileMap = perFileNameFolded.get(n.path);
+      if (!foldedFileMap) perFileNameFolded.set(n.path, (foldedFileMap = new Map()));
+      push(foldedFileMap, n.name.toLocaleLowerCase("en-US"), n);
+      if (n.kind === "module") push(pascalModules, n.name.toLocaleLowerCase("en-US"), n);
+    }
     if (n.kind === "method") {
       const owner = n.owner ?? ownerFromMethodId(n.id);
-      if (owner) push(ownerMethod, `${owner}.${n.name}`, n);
+      if (owner) {
+        push(ownerMethod, `${owner}.${n.name}`, n);
+        if (PASCAL_EXT.test(n.path)) {
+          push(ownerMethodFolded, `${owner}.${n.name}`.toLocaleLowerCase("en-US"), n);
+        }
+      }
     }
   }
 
@@ -178,6 +196,7 @@ export function resolveEdges(
   // `extends` edges (source id's own name → the base name). Used to walk up an
   // inheritance chain when a receiver's own type has no matching method.
   const classParents = new Map<string, string[]>();
+  const classParentsFolded = new Map<string, string[]>();
   for (const e of rawEdges) {
     if (e.relation !== "extends" || !e.name) continue;
     // The declaring class's own bare name — read from its node (keyed by n.name, set
@@ -199,6 +218,9 @@ export function resolveEdges(
       continue;
     }
     push(classParents, ownName, e.name);
+    if (e.caseInsensitive) {
+      push(classParentsFolded, ownName.toLocaleLowerCase("en-US"), e.name.toLocaleLowerCase("en-US"));
+    }
   }
 
   // classTraits: class name → trait names from raw `implements` edges in PHP files.
@@ -260,19 +282,24 @@ export function resolveEdges(
           ? resolveGoImport(e.specifier, opts.goModules!, goFilesByDir)
           : e.file.endsWith(".java")
             ? resolveJavaImport(e.specifier, javaFilesBySuffix)
-            : C_EXT.test(e.file)
-              ? resolveCInclude(e.specifier, e.file, byId, cFilesBySuffix)
-              : e.file.endsWith(".rs")
-                ? resolveRustUse(e.specifier, e.file, byId, rustCrateRoots)
-                : e.file.endsWith(".php")
-                  ? resolvePhpUse(e.specifier, phpFilesBySuffix)
-                  : resolveImport(e.specifier, e.file, byId);
+            : PASCAL_EXT.test(e.file)
+              ? resolvePascalImport(e.specifier, pascalModules)
+              : C_EXT.test(e.file)
+                ? resolveCInclude(e.specifier, e.file, byId, cFilesBySuffix)
+                : e.file.endsWith(".rs")
+                  ? resolveRustUse(e.specifier, e.file, byId, rustCrateRoots)
+                  : e.file.endsWith(".php")
+                    ? resolvePhpUse(e.specifier, phpFilesBySuffix)
+                    : resolveImport(e.specifier, e.file, byId);
       add(e.source, target, "imports", "extracted");
     } else if (e.relation === "extends" || e.relation === "implements") {
       // `implements` also resolves to a `trait` — PHP models trait composition
       // (`use SomeTrait;`) as an implements edge, and a trait is a valid target.
       const kinds: Kind[] = e.relation === "implements" ? ["interface", "trait"] : ["class", "interface"];
-      const hit = resolveName(e.name!, e.file, kinds, perFileName, globalName);
+      const hit = resolveName(
+        e.name!, e.file, kinds, perFileName, globalName,
+        e.caseInsensitive, perFileNameFolded, globalNameFolded,
+      );
       // an unresolved base is usually an external/imported type — keep the name.
       let relation = e.relation;
       if (languageOf(e.file) === "csharp") {
@@ -329,7 +356,10 @@ export function resolveEdges(
         // generic origin so depth-tier references (which always carry a specifier) are
         // provably untouched.
         const refKinds: Kind[] = ["class", "interface", "struct", "enum", "type", "module"];
-        const hit = resolveName(e.name, e.file, refKinds, perFileName, globalName);
+        const hit = resolveName(
+          e.name, e.file, refKinds, perFileName, globalName,
+          e.caseInsensitive, perFileNameFolded, globalNameFolded,
+        );
         if (hit && hit.id !== e.source) add(e.source, hit.id, "references", hit.confidence);
       }
     } else if (e.relation === "references" && e.unityGuid) {
@@ -340,7 +370,10 @@ export function resolveEdges(
     } else if (e.relation === "calls") {
       if (e.viaMember) {
         if (!e.recvType) continue;
-        const hit = resolveTypedMember(e.recvType, e.name!, e.file, ownerMethod, classParents, classTraits, e.argCount);
+        const hit = resolveTypedMember(
+          e.recvType, e.name!, e.file, ownerMethod, classParents, classTraits, e.argCount,
+          e.caseInsensitive, ownerMethodFolded, classParentsFolded,
+        );
         if (hit === "ambiguous") continue; // drop — never guess past an ambiguous owner
         if (hit) {
           add(e.source, hit.id, "calls", hit.confidence);
@@ -419,7 +452,10 @@ export function resolveEdges(
         if (reachableHits.length === 1) add(e.source, reachableHits[0].id, "calls", "inferred");
         continue;
       }
-      let hit = resolveName(e.name!, e.file, callKinds, perFileName, globalName);
+      let hit = resolveName(
+        e.name!, e.file, callKinds, perFileName, globalName,
+        e.caseInsensitive, perFileNameFolded, globalNameFolded,
+      );
       // Python is the Java case without the `new` to mark it: `Widget()` is an
       // ordinary call node, so a constructor edge dies against the function-only
       // index. Java can widen to types outright; Python has free functions, so
@@ -513,8 +549,14 @@ function resolveName(
   kinds: Kind[],
   perFileName: Map<string, Map<string, NodeV1[]>>,
   globalName: Map<string, NodeV1[]>,
+  caseInsensitive = false,
+  perFileNameFolded: Map<string, Map<string, NodeV1[]>> = perFileName,
+  globalNameFolded: Map<string, NodeV1[]> = globalName,
 ): { id: string; confidence: EdgeV1["confidence"] } | null {
-  const local = (perFileName.get(file)?.get(name) ?? []).filter((n) => kinds.includes(n.kind));
+  const lookup = caseInsensitive ? name.toLocaleLowerCase("en-US") : name;
+  const perFile = caseInsensitive ? perFileNameFolded : perFileName;
+  const globalMap = caseInsensitive ? globalNameFolded : globalName;
+  const local = (perFile.get(file)?.get(lookup) ?? []).filter((n) => kinds.includes(n.kind));
   // Same-file requires a UNIQUE match, exactly as the cross-file branch below does.
   // Returning `local[0]` meant a file holding two same-named types (`Alpha.Builder` and
   // `Beta.Builder`, `Alpha.Inner` and `Beta.Inner`) silently resolved to whichever came
@@ -524,7 +566,7 @@ function resolveName(
   // Cross-file: also require a language that could actually reach this one.
   // Without it a unique name match ANYWHERE in the repo wins, which is how a Go
   // builtin ended up resolving into a TypeScript test — see FAMILIES above.
-  const global = (globalName.get(name) ?? []).filter(
+  const global = (globalMap.get(lookup) ?? []).filter(
     (n) => kinds.includes(n.kind) && reachable(file, n.path),
   );
   if (global.length === 1) return { id: global[0].id, confidence: "inferred" };
@@ -575,13 +617,21 @@ function resolveTypedMember(
   classParents: Map<string, string[]>,
   classTraits: Map<string, string[]>,
   argCount?: number,
+  caseInsensitive = false,
+  ownerMethodFolded: Map<string, NodeV1[]> = ownerMethod,
+  classParentsFolded: Map<string, string[]> = classParents,
 ): { id: string; confidence: EdgeV1["confidence"] } | "ambiguous" | null {
   const MAX_DEPTH = 3;
-  const visited = new Set<string>([recvType]);
-  let frontier = [recvType];
+  const normalize = (value: string) => caseInsensitive ? value.toLocaleLowerCase("en-US") : value;
+  const methodMap = caseInsensitive ? ownerMethodFolded : ownerMethod;
+  const parentMap = caseInsensitive ? classParentsFolded : classParents;
+  const normalizedName = normalize(name);
+  const initialType = normalize(recvType);
+  const visited = new Set<string>([initialType]);
+  let frontier = [initialType];
   for (let depth = 0; depth <= MAX_DEPTH && frontier.length; depth++) {
     for (const type of frontier) {
-      const all = ownerMethod.get(`${type}.${name}`)?.filter((c) => reachable(file, c.path));
+      const all = methodMap.get(`${type}.${normalizedName}`)?.filter((c) => reachable(file, c.path));
       if (all && all.length > 0) {
         const candidates = narrowByArity(all, argCount);
         if (candidates.length === 1) {
@@ -604,7 +654,7 @@ function resolveTypedMember(
     }
     const next: string[] = [];
     for (const type of frontier) {
-      for (const parent of classParents.get(type) ?? []) {
+      for (const parent of parentMap.get(type) ?? []) {
         if (visited.has(parent)) continue;
         visited.add(parent);
         next.push(parent);
@@ -638,6 +688,12 @@ function resolveTraitMember(
     return { id: c.id, confidence: c.path === file ? "extracted" : "inferred" };
   }
   return "ambiguous";
+}
+
+/** Resolve a Pascal unit/package name to the file that declares it. */
+function resolvePascalImport(spec: string, modules: Map<string, NodeV1[]>): string {
+  const hits = modules.get(spec.toLocaleLowerCase("en-US"));
+  return hits?.length === 1 ? hits[0].path : spec;
 }
 
 /**

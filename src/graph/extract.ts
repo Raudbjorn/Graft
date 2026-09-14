@@ -126,6 +126,8 @@ export interface RawEdge {
    * no such member — and ONLY then, so a name defined as both a member and a
    * free function yields the member edge alone, exactly as Swift dispatches it. */
   implicitSelf?: boolean;
+  /** Pascal-family matching is case-insensitive for symbols, owners and calls. */
+  caseInsensitive?: boolean;
 }
 
 export interface ExtractResult {
