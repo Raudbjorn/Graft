@@ -27,6 +27,12 @@
   `.pi/skills/graft/SKILL.md` and deliberately no MCP registration (pi's own
   no-MCP stance — the CLI on PATH is the integration surface). Both detect
   from their config dirs (`~/.factory`, `~/.pi`, or repo-local equivalents).
+- **A `project-agents` init row** for the vendor-neutral conventions: one
+  selection writes the `AGENTS.md` section plus graft's skill at
+  `.agents/skills/graft/SKILL.md` — the Agent-Skills-standard location droid,
+  pi, and other standard-reading tools discover natively — with strictly
+  project-scoped writes (no machine-wide config), and no new registry row
+  needed for the next standard-reading agent.
 
 ### Fixed
 

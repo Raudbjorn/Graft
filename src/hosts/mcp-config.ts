@@ -221,7 +221,7 @@ export function mcpTargets(
         out.push(jsonTarget(id, 'droid', join(repo, '.factory', 'mcp.json'), 'mcpServers', entry));
         break;
       default:
-        break; // copilot / windsurf / adal / pi: no MCP target (pi's own no-MCP stance)
+        break; // copilot / windsurf / adal / pi / project-agents: no MCP target (pi's own no-MCP stance)
     }
   }
   return out;

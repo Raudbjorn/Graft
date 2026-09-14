@@ -34,12 +34,31 @@ test('explicit agents list overrides detection and flags unknown ids', () => {
 test('all writes every host and re-run converges (idempotent)', () => {
   const home = fresh(); const repo = fresh();
   const first = runHostsInit(repo, { home, all: true });
-  assert.equal(first.written.length, 12);
+  assert.equal(first.written.length, 13);
   const second = runHostsInit(repo, { home, all: true });
   assert.ok(second.written.every((w) => w.action === 'unchanged'));
-  // `agents`, `droid`, and `antigravity` share AGENTS.md, but the fenced section is written once
+  assert.ok(second.hooks.every((w) => w.action === 'unchanged'), 'skill/hook writes converge too');
+  // `agents`, `droid`, `project-agents`, and `antigravity` share AGENTS.md, but the
+  // fenced section is written once
   const agents = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
   assert.equal(agents.match(/graft:start/g)!.length, 1);
+});
+
+test('project-agents: AGENTS.md section plus the .agents/skills standard skill, nothing machine-wide', () => {
+  const home = fresh(); const repo = fresh();
+  mkdirSync(join(home, '.factory'));
+  const r = runHostsInit(repo, { home, agents: ['project-agents'] });
+  assert.deepEqual(r.written.map((w) => w.id), ['project-agents']);
+  assert.ok(readFileSync(join(repo, 'AGENTS.md'), 'utf8').includes('graft ask'));
+  const skill = readFileSync(join(repo, '.agents', 'skills', 'graft', 'SKILL.md'), 'utf8');
+  assert.match(skill, /^---\nname: graft\n/);
+  assert.ok(skill.includes('graft callers'), 'the skill carries the full playbook, not just a pointer');
+  assert.deepEqual(r.mcp, [], 'the row is instructions + skill only');
+  // re-run converges, and the vendor rows on top never duplicate the shared section
+  const second = runHostsInit(repo, { home, agents: ['project-agents'] });
+  assert.ok(second.written.every((w) => w.action === 'unchanged'));
+  const all = runHostsInit(repo, { home, agents: ['project-agents', 'agents', 'droid', 'pi'] });
+  assert.equal(readFileSync(join(repo, 'AGENTS.md'), 'utf8').match(/graft:start/g)!.length, 1);
 });
 
 test('droid: detected via ~/.factory or repo .factory, wired as an AGENTS.md section', () => {
