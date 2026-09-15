@@ -1,151 +1,145 @@
-/**
- * Minimal MCP stdio server: newline-delimited JSON-RPC 2.0.
- * stdout carries protocol messages ONLY; diagnostics go to stderr.
- */
-import { createInterface } from 'node:readline';
-import { TOOLS, callTool } from './tools.js';
+import { createServer, type IncomingMessage } from 'node:http';
+import { realpathSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { TOOLS } from './tools.js';
 import { mcpInstructions } from './instructions.js';
-import { hasGraftIndex } from '../graph/root.js';
-import { mainWorktreeRoot } from '../graph/seed.js';
-import { runUpkeep } from '../upkeep-run.js';
-import { runningVersion } from '../upkeep.js';
-import { maybeFlushInBackground, track } from '../telemetry/index.js';
+import { canonicalToolName } from './tool-names.js';
+import { ToolPool } from './pool.js';
+import type { BuildEvent } from './build.js';
 
-/**
- * MCP tool name → the command enum the telemetry contract knows. A tool absent
- * here is simply not counted: `track` would drop an unlisted command anyway, and
- * mapping by hand keeps the wire vocabulary identical across the CLI and MCP so
- * `ask` means the same thing in both.
- */
-const TOOL_COMMAND: Record<string, string> = {
-  graft_find_code: 'ask',
-  graft_find_all: 'grep',
-  graft_trace_calls: 'callers',
-  graft_file_api: 'skeleton',
-  graft_repo_map: 'map',
-  graft_check_freshness: 'check',
-};
+export const DEFAULT_MCP_PORT = 8421;
 
-function send(msg: object): void {
-  process.stdout.write(`${JSON.stringify(msg)}\n`);
+function absoluteDirectory(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !isAbsolute(value)) throw new Error(`${label} must be an absolute directory path`);
+  const path = realpathSync(value);
+  if (!statSync(path).isDirectory()) throw new Error(`${label} must be a directory`);
+  return path;
+}
+function outputDirectory(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !isAbsolute(value)) throw new Error('context_dir must be an absolute directory path');
+  try { return absoluteDirectory(value, 'context_dir'); }
+  catch (error: any) {
+    if (error.code !== 'ENOENT') throw error;
+    const parent = dirname(value);
+    if (parent === value) throw error;
+    return join(outputDirectory(parent)!, value.slice(parent.length));
+  }
+}
+async function readBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 1_048_576) throw new Error('Request body exceeds 1 MiB');
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-function reply(id: unknown, result: object): void {
-  send({ jsonrpc: '2.0', id, result });
-}
-
-function replyError(id: unknown, code: number, message: string): void {
-  send({ jsonrpc: '2.0', id, error: { code, message } });
-}
-
-/**
- * Which tools this server admits to having.
- *
- * `hosts/claude-global.ts` registers graft at the *user* MCP scope, which starts this
- * server in every project the user opens — including ones that never asked for graft.
- * Six tool schemas is real context, charged on every turn of every session, and in a
- * repo with no graph every one of them can only answer "run graft build". So a repo
- * that never invited graft is told there is nothing to call.
- *
- * The parent-checkout clause is not an optimization, it is the case the global
- * registration exists for: a fresh `git worktree add` has no `graft/` of its own
- * (it's gitignored, so git never checks it out) and gets one from its parent on the
- * first query — see graph/seed.ts. Gating on this tree alone would hide graft in
- * precisely the worktree the user is trying to work in, which is the bug, inverted.
- *
- * A `--dir` override is an explicit "the graph is over there", so it always
- * advertises without a probe.
- */
-function advertised(root: string, dirOverride?: string): typeof TOOLS {
-  if (dirOverride !== undefined) return TOOLS;
-  if (hasGraftIndex(root)) return TOOLS;
-  const main = mainWorktreeRoot(root);
-  return main && hasGraftIndex(main) ? TOOLS : [];
-}
-
-/**
- * `version` is threaded in from the CLI rather than read here: `readCurrentVersion`
- * resolves package.json relative to the calling module, and from `dist/mcp/` that
- * lookup misses. The caller already knows it.
- */
-export function startMcpServer(root: string, dirOverride?: string, version = '0'): void {
-  // The self-maintenance pass, run once at boot. This is the ONLY channel that
-  // reaches hosts with no hook support (Cursor, and any plain MCP client): it
-  // refreshes rule files an older `graft init` wrote, and kicks off the cached
-  // registry check. Both are fail-soft, and the resulting lines ride along in
-  // `instructions` below — stdout is protocol-only, so there is nowhere else to
-  // put them. Never blocks: the registry fetch happens in a detached child.
-  const upkeep = runUpkeep(root, runningVersion()).lines;
-  for (const line of upkeep) console.error(line);
-  // Same deal for the telemetry queue: flushed from a detached child at boot, so
-  // a Cursor user who never touches the CLI still gets their events out.
-  //
-  // Deliberately NOT the first-run notice. This server's stderr goes to an editor
-  // log nobody reads, so printing it here would mark the disclosure as shown
-  // without anyone having seen it. It stays pending for the next CLI command,
-  // and `graft init`'s picker is the channel that reached this user already.
-  maybeFlushInBackground();
-
-  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  rl.on('line', (line) => {
-    const text = line.trim();
-    if (!text) return;
-    let msg: { id?: unknown; method?: string; params?: Record<string, any> };
+export async function startMcpServer(opts: { port?: number; token: string; version?: string; workers?: number; idleMs?: number }) {
+  if (!opts.token || /\s/.test(opts.token)) throw new Error('Set GRAFT_MCP_TOKEN to a nonempty bearer token without whitespace');
+  const pool = new ToolPool(opts.workers ?? 4, opts.idleMs);
+  type Session = { server: Server; transport: StreamableHTTPServerTransport; roots: Set<string>; touched: number; active: number };
+  const sessions = new Map<string, Session>();
+  const authorization = Buffer.from(`Bearer ${opts.token}`);
+  const schemas = TOOLS.map(tool => {
+    const schema = tool.inputSchema as { properties?: object; required?: string[] };
+    return { ...tool, inputSchema: { type: 'object' as const, properties: { ...schema.properties,
+      project_root: { type: 'string', description: 'Absolute local repository directory' },
+      context_dir: { type: 'string', description: 'Optional absolute graph output directory' } },
+      required: [...(schema.required ?? []), 'project_root'] } };
+  });
+  const validator = new AjvJsonSchemaValidator();
+  const validators = new Map(schemas.map(tool => [tool.name, validator.getValidator(tool.inputSchema)]));
+  const http = createServer(async (req, res) => {
+    const reject = (status: number, message: string) => { res.writeHead(status, { 'Content-Type': 'text/plain' }); res.end(message); };
+    const port = (http.address() as { port: number }).port;
+    if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host ?? '')) return reject(403, 'Invalid Host');
+    if (req.headers.origin && ![`http://127.0.0.1:${port}`, `http://localhost:${port}`].includes(req.headers.origin)) return reject(403, 'Invalid Origin');
+    const given = Buffer.from(req.headers.authorization ?? '');
+    if (given.length !== authorization.length || !timingSafeEqual(given, authorization)) return reject(401, 'Unauthorized');
+    if (req.url !== '/mcp') return reject(404, 'Not found');
+    if (!['GET', 'POST', 'DELETE'].includes(req.method ?? '')) { res.setHeader('Allow', 'GET, POST, DELETE'); return reject(405, 'Method not allowed'); }
+    if (Number(req.headers['content-length'] ?? 0) > 1_048_576) return reject(413, 'Request body exceeds 1 MiB');
     try {
-      msg = JSON.parse(text);
-    } catch {
-      replyError(null, -32700, 'parse error');
-      return;
-    }
-    const { id, method, params } = msg;
-    const isNotification = id === undefined;
-    switch (method) {
-      case 'initialize':
-        reply(id, {
-          protocolVersion: params?.protocolVersion ?? '2024-11-05',
-          capabilities: { tools: {} },
-          serverInfo: { name: 'graft', version },
-          // The one channel that survives tool deferral — see ./instructions.ts.
-          instructions: upkeep.length ? `${upkeep.join('\n')}\n\n${mcpInstructions()}` : mcpInstructions(),
+      let body: unknown;
+      if (req.method === 'POST') {
+        if (!req.headers['content-type']?.startsWith('application/json')) return reject(415, 'Expected application/json');
+        try { body = await readBody(req); } catch (error) { return reject(String(error).includes('1 MiB') ? 413 : 400, 'Invalid request body'); }
+      }
+      const id = req.headers['mcp-session-id'];
+      let session = typeof id === 'string' ? sessions.get(id) : undefined;
+      if (id && !session) return reject(404, 'Unknown session');
+      if (!session) {
+        if (req.method !== 'POST' || !isInitializeRequest(body)) return reject(400, 'Initialize a session first');
+        if (sessions.size >= 256) return reject(503, 'Too many sessions');
+        const server = new Server({ name: 'graft', version: opts.version ?? '0' },
+          { capabilities: { tools: {}, logging: {} }, instructions: mcpInstructions() });
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: randomUUID,
+          onsessioninitialized: id => { sessions.set(id, session!); } });
+        session = { server, transport, roots: new Set(), touched: Date.now(), active: 0 };
+        const current = session;
+        server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: schemas }));
+        server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+          try {
+            const args = request.params.arguments ?? {};
+            const name = canonicalToolName(request.params.name);
+            const schema = schemas.find(tool => tool.name === name);
+            if (!schema) throw new Error(`Unknown tool: ${name}`);
+            const validation = validators.get(name)!(args);
+            if (!validation.valid) throw new Error(validation.errorMessage);
+            const root = absoluteDirectory(args.project_root, 'project_root');
+            const contextDir = outputDirectory(args.context_dir ?? join(root, 'graft'));
+            if (current.roots.size >= 256 && !current.roots.has(root)) throw new Error('Too many repository subscriptions in this session');
+            current.roots.add(root);
+            current.active++;
+            let progress = 0;
+            const progressToken = request.params._meta?.progressToken;
+            const result = await pool.run(root, name, args, contextDir, (event: BuildEvent) => {
+              if (progressToken !== undefined && event.progress !== undefined)
+                void extra.sendNotification({ method: 'notifications/progress', params: { progressToken, progress: ++progress, message: `${event.project_root}: ${event.progress}/${event.total ?? '?'}` } }).catch(() => {});
+              if (event.status !== 'completed' && event.status !== 'failed') return;
+              for (const subscriber of sessions.values()) {
+                if (subscriber.roots.has(root) || subscriber.roots.has(event.project_root))
+                  void subscriber.server.sendLoggingMessage({ level: event.status === 'failed' ? 'error' : 'info', logger: 'graft.build', data: event }).catch(() => {});
+              }
+            }).finally(() => { current.active--; current.touched = Date.now(); });
+            return { content: [{ type: 'text' as const, text: result.text }], isError: result.isError };
+          } catch (error) {
+            return { content: [{ type: 'text' as const, text: error instanceof Error ? error.message : String(error) }], isError: true };
+          }
         });
-        return;
-      case 'notifications/initialized':
-      case 'notifications/cancelled':
-        return; // notifications get no response
-      case 'ping':
-        if (!isNotification) reply(id, {});
-        return;
-      case 'tools/list': {
-        if (isNotification) return;
-        reply(id, { tools: advertised(root, dirOverride).map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) });
-        return;
+        server.onclose = () => { if (transport.sessionId) sessions.delete(transport.sessionId); current.roots.clear(); };
+        await server.connect(transport);
       }
-      case 'tools/call': {
-        if (isNotification) return;
-        const name = String(params?.name ?? '');
-        const args = (params?.arguments ?? {}) as Record<string, unknown>;
-        // Async because a tool call may rebuild the graph first (see
-        // graph/refresh.ts). `callTool` absorbs its own errors, so the only thing
-        // that can reject here is a bug — surface it as a JSON-RPC error rather
-        // than an unhandled rejection that kills the server.
-        callTool(root, name, args, dirOverride).then(
-          (r) => {
-            // No `hit`: `isError` means the tool failed, which is not the same
-            // question as "did the graph have an answer". Absent beats wrong.
-            // hasOwn for the same reason as track()'s: a client is free to send
-            // `{"name":"constructor"}`, and a plain lookup would hand `track` a
-            // function rather than undefined.
-            const command = Object.hasOwn(TOOL_COMMAND, name) ? TOOL_COMMAND[name] : undefined;
-            track('query', { command, surface: 'mcp' }, { repo: root, host: 'mcp' });
-            reply(id, { content: [{ type: 'text', text: r.text }], isError: r.isError });
-          },
-          (err) => replyError(id, -32603, err instanceof Error ? err.message : String(err)),
-        );
-        return;
-      }
-      default:
-        if (!isNotification) replyError(id, -32601, `method not found: ${method}`);
+      session.touched = Date.now();
+      await session.transport.handleRequest(req, res, body);
+    } catch (error) {
+      console.error('MCP request failed:', error instanceof Error ? error.message : String(error));
+      if (!res.headersSent) reject(500, 'Internal server error'); else res.end();
     }
   });
-  process.stdin.on('end', () => process.exit(0));
+  http.requestTimeout = 30_000;
+  await new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(opts.port ?? DEFAULT_MCP_PORT, '127.0.0.1', resolve); });
+  const expiry = setInterval(() => {
+    for (const session of sessions.values()) if (!session.active && Date.now() - session.touched > 30 * 60_000) void session.server.close();
+  }, 60_000);
+  expiry.unref();
+  let closing: Promise<void> | undefined;
+  return { url: `http://127.0.0.1:${(http.address() as { port: number }).port}/mcp`,
+    close: () => closing ??= (async () => {
+      clearInterval(expiry);
+      const stopped = new Promise<void>(resolve => http.close(() => resolve()));
+      await Promise.all([...sessions.values()].map(session => session.server.close()));
+      http.closeAllConnections();
+      await pool.close();
+      await stopped;
+    })(),
+  };
 }

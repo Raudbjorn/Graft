@@ -784,13 +784,18 @@ program
 
 program
   .command("mcp")
-  .description("Serve the graph over MCP (stdio) — exposes graft_find_code, graft_trace_calls, graft_find_all, graft_file_api, graft_repo_map and graft_check_freshness as tools")
-  .argument(...DIR_ARG)
-  .action(async (dirArg: string | undefined) => {
-    const dir = noteQuery(queryRoot(dirArg));
+  .description("Serve local repositories over MCP Streamable HTTP with SSE notifications")
+  .option("--port <port>", "loopback HTTP port", "8421")
+  .action(async (opts: { port: string }) => {
+    const port = Number(opts.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("port must be 1–65535");
+    if (program.opts<GlobalOpts>().dir) throw new Error("MCP uses per-call project_root/context_dir, not --dir");
     const { startMcpServer } = await import("./mcp/server.js");
-    const globalOpts = program.opts<{ dir?: string }>();
-    startMcpServer(dir, globalOpts.dir, currentVersion);
+    const server = await startMcpServer({ port, token: process.env.GRAFT_MCP_TOKEN ?? '', version: currentVersion });
+    console.error(`graft MCP → ${server.url}`);
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
+      void server.close().then(() => process.exit(0));
+    });
   });
 
 program

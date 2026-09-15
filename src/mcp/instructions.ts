@@ -31,6 +31,8 @@ const TOOL_ORDER = [
   'graft_trace_calls',
   'graft_file_api',
   'graft_repo_map',
+  'graft_check_freshness',
+  'graft_build',
 ] as const;
 
 /** The `select:` argument that loads every graft tool in one lookup. */
@@ -40,18 +42,19 @@ export function toolSearchQuery(prefix = 'mcp__graft__'): string {
 
 export function mcpInstructions(): string {
   return [
-    'This repo is indexed by graft: a prebuilt graph of every symbol, its file:line',
-    'span, and who calls what. Prefer these tools over grep/read — one call usually',
-    'replaces several file reads.',
+    'Graft serves local repository graphs. Every call requires an absolute project_root;',
+    'context_dir optionally selects an absolute graph directory. Builds cost $0, no API key.',
     '',
-    `**If these tools are deferred (names shown, schemas withheld), load them all in ONE lookup:** ToolSearch "${toolSearchQuery()}" — one round trip for the whole session. Never load them one at a time.`,
+    `Deferred schemas? Load all tools in ONE lookup: ToolSearch "${toolSearchQuery()}".`,
     '',
-    '- graft_find_code — "how does X work" / "where is Y": ranked hits, code inlined.',
-    '- graft_find_all — when you need EVERY occurrence; find_code is top-N and misses some.',
-    '- graft_trace_calls — who calls it, what it calls, blast radius before a rename.',
-    '- graft_file_api — a file\'s whole API in ~200 tokens.',
-    '- graft_repo_map — orientation in an unfamiliar repo.',
+    '- graft_find_code: locate and understand; ranked hits with source inlined.',
+    '- graft_find_all: EVERY occurrence, grouped by symbol.',
+    '- graft_trace_calls: callers/callees; depth:"all" before multi-file refactors.',
+    '- graft_file_api: a file’s signatures and spans.',
+    '- graft_repo_map: summarize an existing graph.',
+    '- graft_check_freshness: report drift.',
+    '- graft_build: explicitly create a missing graph; return paths and counts.',
     '',
-    'Results already reflect uncommitted edits — the graph refreshes before each query.',
+    'Queries refresh existing graphs. Build completion is sent as an SSE logging notification.',
   ].join('\n');
 }

@@ -8,7 +8,6 @@
  * `registerMcpConfigs()` walks that same list to do the writing.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { PlannedWrite } from './plan.js';
@@ -30,49 +29,15 @@ export interface McpTarget extends PlannedWrite {
   defaults?: Record<string, unknown>;
 }
 
-/**
- * How to launch the MCP server, decided once at init time.
- *
- * `npx -y` resolves the package before it can serve: measured at a 211 ms
- * spawn→`initialize` handshake against 80 ms for the installed binary, five runs
- * each. The harness registers a server's tools only once that handshake lands, and
- * a slow one can miss the first request entirely — in a traced session graft's
- * tools arrived 13.9 s in, four model turns too late to shape the approach. (That
- * 13.9 s is NOT explained by 130 ms; the gap's cause is still unknown. This is the
- * cheap half of the fix, not the whole of it.)
- *
- * Deliberately a bare command name, never an absolute path: these files get
- * committed and shared, and this repo already carries the scar of the alternative —
- * a checked-in hook shim with another machine's home directory baked into it. A
- * bare `graft` works on any machine that has it installed; `npx` remains the
- * fallback for machines that don't.
- */
-const NPX_LAUNCH = { command: 'npx', args: ['-y', '@nanonets/graft', 'mcp'] };
-const BIN_LAUNCH = { command: 'graft', args: ['mcp'] };
-
-function graftOnPath(): boolean {
-  const r = spawnSync('graft', ['--version'], { stdio: 'ignore', timeout: 5000 });
-  return r.status === 0;
+/** Loopback endpoint shared by every client; secrets remain in the client's environment. */
+export function serverEntry() {
+  return { type: 'http', url: process.env.GRAFT_MCP_URL || 'http://127.0.0.1:8421/mcp',
+    headers: { Authorization: 'Bearer ${GRAFT_MCP_TOKEN}' } };
 }
-
-/**
- * JSON hosts: `{ command, args }`.
- *
- * `GRAFT_MCP_NPX=1` forces the `npx` form — the escape hatch for a machine whose
- * global install is stale or shadowed, and what the tests set so their expectations
- * don't depend on whether the machine running them happens to have graft installed.
- * `opts.onPath` is the same override for direct unit tests of both branches.
- */
-export function serverEntry(opts: { onPath?: boolean } = {}): { command: string; args: string[] } {
-  const forced = process.env.GRAFT_MCP_NPX;
-  if (forced !== undefined && forced !== '' && forced !== '0' && forced !== 'false') return NPX_LAUNCH;
-  return (opts.onPath ?? graftOnPath()) ? BIN_LAUNCH : NPX_LAUNCH;
-}
-
 
 function opencodeEntry(): object {
-  const { command, args } = serverEntry();
-  return { type: 'local', command: [command, ...args], enabled: true };
+  return { type: 'remote', url: serverEntry().url, enabled: true, oauth: false,
+    headers: { Authorization: 'Bearer {env:GRAFT_MCP_TOKEN}' } };
 }
 
 function dirExists(p: string): boolean {
@@ -97,9 +62,12 @@ export function mergeJsonKey(
   if (typeof bucket !== 'object' || bucket === null || Array.isArray(bucket)) {
     return { id, path, action: 'skipped-unparseable' };
   }
-  if (JSON.stringify(bucket.graft) === JSON.stringify(entry)) return { id, path, action: 'unchanged' };
+  const preferences = { ...(bucket.graft && typeof bucket.graft === 'object' ? bucket.graft : {}) };
+  for (const key of ['command', 'args', 'env', 'transport', 'type', 'url', 'httpUrl', 'serverUrl', 'headers', 'oauth']) delete preferences[key];
+  const next = { ...entry, ...preferences }; // Keep disabled/approval/timeout choices during transport migration.
+  if (JSON.stringify(bucket.graft) === JSON.stringify(next)) return { id, path, action: 'unchanged' };
   const action = existed ? 'updated' : 'created';
-  bucket.graft = entry;
+  bucket.graft = next;
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(root, null, 2)}\n`);
   return { id, path, action };
@@ -141,9 +109,7 @@ export function stripTomlSection(text: string): { rest: string; found: boolean }
 function upsertCodexToml(id: string, path: string): McpWrite {
   const existed = existsSync(path);
   const text = existed ? readFileSync(path, 'utf8') : '';
-  const { command, args } = serverEntry();
-  const argList = args.map((a) => JSON.stringify(a)).join(", ");
-  const section = `${TOML_HEADER}\ncommand = \"${command}\"\nargs = [${argList}]\n`;
+  const section = `${TOML_HEADER}\nurl = ${JSON.stringify(serverEntry().url)}\nbearer_token_env_var = "GRAFT_MCP_TOKEN"\n`;
 
   const { rest, found } = stripTomlSection(text);
   // Byte-identical already: don't rewrite the file just to reorder it.
@@ -189,45 +155,18 @@ export function mcpTargets(
   for (const id of ids) {
     switch (id) {
       case 'cursor':
-        out.push(jsonTarget(id, id, join(repo, '.cursor', 'mcp.json'), 'mcpServers', entry));
+        out.push(jsonTarget(id, id, join(repo, '.cursor', 'mcp.json'), 'mcpServers', { url: entry.url, headers: { Authorization: 'Bearer ${env:GRAFT_MCP_TOKEN}' } }));
         break;
       case 'gemini':
-        out.push(jsonTarget(id, id, join(repo, '.gemini', 'settings.json'), 'mcpServers', entry));
-        break;
-      case 'antigravity':
-        // Antigravity reads MCP from its OWN registry, separate from Gemini CLI's
-        // `.gemini/settings.json` — a global `~/.gemini/config/mcp_config.json` (the
-        // gap #62 reported). Standard `{command,args}` under `mcpServers`. Global
-        // scope: it applies to every workspace opened in Antigravity.
-        out.push(
-          jsonTarget(id, 'antigravity', join(home, '.gemini', 'config', 'mcp_config.json'), 'mcpServers', entry, 'global'),
-        );
+        out.push(jsonTarget(id, id, join(repo, '.gemini', 'settings.json'), 'mcpServers', { httpUrl: entry.url, headers: entry.headers }));
         break;
       case 'kiro':
-        out.push(jsonTarget(id, id, join(repo, '.kiro', 'settings', 'mcp.json'), 'mcpServers', entry));
+        out.push(jsonTarget(id, id, join(repo, '.kiro', 'settings', 'mcp.json'), 'mcpServers', { url: entry.url, headers: entry.headers }));
         break;
-      case 'muse': {
-        // Muse reads MCP from the user-level `~/.config/muse/settings.json` —
-        // the camelCase `mcpServers` map (verified against the live file; the
-        // report's `mcp_servers` spelling is for TOML hosts, not this one) with
-        // a stdio `{ command, args }` entry like every other JSON host, plus a
-        // mandatory top-level `schema_version: 1` (a missing key fails every
-        // Muse command at startup). Global scope: it applies to every workspace
-        // opened in Muse, so `--no-global` suppresses it.
-        const museEntry = { transport: 'stdio', ...entry };
-        out.push(
-          jsonTarget(id, 'muse', join(home, '.config', 'muse', 'settings.json'), 'mcpServers', museEntry, 'global', { schema_version: 1 }),
-        );
-        break;
-      }
+      case 'antigravity':
+      case 'muse':
       case 'grok':
-        // Grok reads MCP from repo-level `.grok/config.toml` (`[mcp_servers.<name>]`),
-        // the same TOML shape Codex uses at ~/.codex/config.toml.
-        out.push({
-          hostId: id, id: 'grok', path: join(repo, '.grok', 'config.toml'),
-          scope: 'repo', kind: 'mcp', what: '[mcp_servers.graft]', format: 'toml',
-        });
-        break;
+        break; // No verified authenticated Streamable HTTP configuration for these hosts.
       case 'agents':
         // Guarded on the CLI actually being installed, so a plan only ever
         // lists files a real run would touch.
@@ -242,10 +181,7 @@ export function mcpTargets(
         }
         break;
       case 'droid':
-        // Droid reads MCP from `.factory/mcp.json` at the project root — the
-        // committed, team-shared level of its user/folder/project trio
-        // (docs.factory.ai/harness/mcp.md). Standard `{command,args}` under
-        // `mcpServers`, repo scope like cursor/gemini/kiro.
+        // Droid reads HTTP registrations from the project-level mcpServers map.
         out.push(jsonTarget(id, 'droid', join(repo, '.factory', 'mcp.json'), 'mcpServers', entry));
         break;
       default:
@@ -260,6 +196,8 @@ export function registerMcpConfigs(
   ids: string[],
   opts: { home?: string; global?: boolean } = {},
 ): McpWrite[] {
+  for (const id of ids) if (['antigravity', 'muse', 'grok'].includes(id))
+    console.error(`graft: ${id} MCP registration skipped: authenticated Streamable HTTP support is unverified; use the graft CLI.`);
   return mcpTargets(repo, ids, opts)
     .filter((t) => opts.global !== false || t.scope !== 'global')
     .map((t) =>

@@ -168,7 +168,7 @@ test('runHostsInit registers MCP configs for selected hosts', () => {
   // shape, not the platform.
   assert.match(toPosixPath(r.mcp[0].path), /\.cursor\/mcp\.json$/);
   const cfg = JSON.parse(readFileSync(join(repo, '.cursor', 'mcp.json'), 'utf8'));
-  assert.equal(cfg.mcpServers.graft.command, 'npx');
+  assert.equal(cfg.mcpServers.graft.url, 'http://127.0.0.1:8421/mcp');
 });
 
 test('mcp: false skips MCP registration', () => {

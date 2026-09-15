@@ -446,6 +446,17 @@ function targets(repo: string, opts: RetractOpts): Target[] {
     });
   }
 
+  // Retraction must still remove registrations created by older stdio releases.
+  for (const [hostId, path, global] of [
+    ['grok', join(repo, '.grok', 'config.toml'), false],
+    ['muse', join(home, '.config', 'muse', 'settings.json'), true],
+    ['antigravity', join(home, '.gemini', 'config', 'mcp_config.json'), true],
+  ] as const) {
+    if (exclude.has(hostId) || (global && opts.global === false)) continue;
+    add({ hostId, path, what: 'legacy stdio MCP registration', scope: global ? 'global' : 'repo',
+      run: a => path.endsWith('.toml') ? removeTomlSection(path, a) : removeJsonKey(path, 'mcpServers', a) });
+  }
+
   // 2b. The project-agents skill — a repo-local write outside the host's own
   //     relPath (AGENTS.md), so it needs its own target here. Removing it is
   //     safe while AGENTS.md stays: the standard-reading agents lose the
