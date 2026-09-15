@@ -75,16 +75,24 @@ override (`systemctl --user edit graft-mcp`), clearing the old command first:
 ```ini
 [Service]
 ExecStart=
-ExecStart=/usr/bin/graft mcp --port 9000
+Environment=GRAFT_MCP_URL=http://127.0.0.1:9000/mcp
+ExecStart=/usr/bin/graft mcp
 ```
 
 Then set `GRAFT_MCP_URL=http://127.0.0.1:9000/mcp` before explicitly
-regenerating host configurations. Only HTTP loopback URLs are accepted. The token is required on every HTTP request.
+regenerating host configurations. Only HTTP loopback URLs are accepted; localhost is normalized to IPv4 127.0.0.1. `--port`, if supplied, must match that URL. The token is required on every HTTP request.
 All authenticated clients have the filesystem access of the service user.
 
 At most four reusable worker processes run tools. Calls for one repository/output
 are serialized, identical in-flight builds are shared, and excess work queues.
-Workers exit after 60 seconds idle. Jobs have a two-minute deadline including queue time; a stuck worker is killed and its slot replaced. Four occupied workers can delay another
+Workers exit after 60 seconds idle and are replaced when switching repositories,
+so native grammars and language packs stay isolated. Jobs time out after two minutes
+without progress (or in the queue), configurable with `GRAFT_MCP_JOB_TIMEOUT_MS`.
+Build progress renews the timer; lock waits report progress and have a separate
+five-minute limit. Extraction checkpoints every 30 seconds let retries reuse
+completed files. A killed refresh retries the query against the last saved graph
+with a stale-answer warning. Graph caches retain up to 16 entries/128 MiB per cache,
+plus one oversized active graph when needed; these are serialized sizes, not RSS limits. Four occupied workers can delay another
 repository's query; the HTTP listener stays responsive. Sessions expire after
 30 minutes without requests, active work, or an open SSE stream. Reconnect to start a new session.
 

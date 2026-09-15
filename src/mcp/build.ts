@@ -2,11 +2,9 @@ import { MCP_BUILD_LOCK_WAIT_MS, MCP_BUILD_LOCK_POLL_MS } from './config.js';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildGraph } from '../graph/build.js';
-import { discoverWorkspaceChildren } from '../graph/scopes.js';
-import { readFingerprint } from '../graph/fingerprint.js';
 import { invalidateGraphCaches } from '../graph/load.js';
 import { releaseOnSignal } from '../graph/refresh.js';
-import { clearParentGraft, isWorkspaceBuildRoot, writeWorkspace } from '../graph/workspace.js';
+import { splitWorkspace, migrationNote, workspacePath, isWorkspaceBuildRoot } from '../graph/workspace.js';
 import { CACHE_DIR, contextDirFor, ensureGitignored } from '../context/node-file.js';
 import { acquireLockIn, releaseLockIn } from '../util/state.js';
 
@@ -29,25 +27,25 @@ export async function buildForMcp(root: string, contextDir?: string, onBuild?: B
   const deadline = Date.now() + MCP_BUILD_LOCK_WAIT_MS;
   while (!acquireLockIn(cache)) {
     if (Date.now() >= deadline) throw new Error('Timed out waiting for the graph build lock');
+    event('progress', { message: 'Waiting for another graph builder' });
     await delay(MCP_BUILD_LOCK_POLL_MS);
   }
   const unhook = releaseOnSignal(cache);
   event('started');
   try {
     if (isWorkspaceBuildRoot(root, contextDir)) {
-      const children = discoverWorkspaceChildren(root).sort();
       const results: Record<string, unknown>[] = [];
-      for (const child of children) results.push(await buildForMcp(join(root, child), undefined, onBuild));
-      clearParentGraft(root, contextDir, true);
+      const { children, migrated } = await splitWorkspace(root, contextDir,
+        async child => { results.push(await buildForMcp(child, undefined, onBuild)); },
+        ({ children, migrated }) => { if (migrated) event('progress', { message: migrationNote(children) }); }, true);
       invalidateGraphCaches(out);
-      const graph_path = writeWorkspace(root, { version: 1, children }, contextDir);
+      const graph_path = workspacePath(root, contextDir);
       ensureGitignored(root, out);
       event('completed', { graph_path });
-      return { project_root: root, context_dir: out, graph_path, children: results };
+      return { project_root: root, context_dir: out, graph_path, children: results, ...(migrated ? { message: migrationNote(children) } : {}) };
     }
     const result = await buildGraph(root, {
       contextDir,
-      onlyDirs: readFingerprint(out)?.onlyDirs,
       onProgress: ({ index, total }) => event('progress', { progress: index, total }),
     });
     invalidateGraphCaches(out);

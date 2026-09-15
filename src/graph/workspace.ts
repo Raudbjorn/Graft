@@ -742,12 +742,13 @@ export async function splitWorkspace(
   override: string | undefined,
   buildChild: (childDir: string, childName: string) => Promise<void>,
   onStart?: (info: { children: string[]; migrated: boolean }) => void,
+  preserveUnrelated = false,
 ): Promise<{ children: string[]; migrated: boolean }> {
   const children = discoverWorkspaceChildren(root).slice().sort();
   const migrated = hasMegaGraph(root, override);
   onStart?.({ children, migrated });
   for (const child of children) await buildChild(join(root, child), child);
-  clearParentGraft(root, override); // drop the mega-graph/.cache/cards…
+  clearParentGraft(root, override, preserveUnrelated); // drop the mega-graph/.cache/cards…
   writeWorkspace(root, { version: 1, children }, override); // …leaving ONLY workspace.json
   return { children, migrated };
 }

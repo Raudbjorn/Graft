@@ -31,11 +31,11 @@ import { hooksShim } from '../claude/shim-template.js';
 import { mergeGraftHooks } from '../claude/settings-merge.js';
 import { toPosixPath } from '../util/paths.js';
 import { readJsonObject, writeOwned, type ConfigWrite } from './config-write.js';
-import { mergeJsonKey, serverEntry } from './mcp-config.js';
+import { mergeJsonKey, serverEntry, mcpSetupReason, type McpWrite } from './mcp-config.js';
 import type { PlannedWrite } from './plan.js';
 
 /** Same `{ id, path, action }` contract every other writer in this layer reports. */
-export type GlobalWrite = ConfigWrite;
+export type GlobalWrite = McpWrite;
 
 /** The directory the user-level shim lives in — the base every hook command names. */
 export function globalHelpersDir(home: string): string {
@@ -131,12 +131,9 @@ export function installClaudeGlobal(home: string, opts: { mcp?: boolean; hooks?:
   const mcp = byId.get('claude-global-mcp');
   if (mcp) {
     try {
-      // mergeJsonKey's return type also covers callers that pre-empt it on
-      // `--no-mcp` (init.ts) and build the `'skipped'` record themselves without
-      // calling it at all — this call site is reached only when `opts.mcp !==
-      // false` (claudeGlobalTargets already dropped the target otherwise), so
-      // the actual result here is always a true ConfigWrite.
-      out.push(mergeJsonKey(mcp.id, mcp.path, 'mcpServers', serverEntry()) as ConfigWrite);
+      const reason = mcpSetupReason();
+      out.push(reason ? { id: mcp.id, path: mcp.path, action: 'skipped', reason }
+        : mergeJsonKey(mcp.id, mcp.path, 'mcpServers', serverEntry()));
     } catch {
       out.push({ id: mcp.id, path: mcp.path, action: 'skipped-unparseable' });
     }

@@ -207,7 +207,13 @@ export async function buildGraph(
   // file could be Ansible. Same await-before-the-sync-loop contract.
   if (files.some((f) => ansibleClaims(f.abs))) await warmAnsibleGrammar();
 
+  const checkpointMs = 30_000;
+  let checkpointAt = Date.now();
   files.forEach((f, i) => {
+    if (Date.now() - checkpointAt >= checkpointMs) {
+      writeExtractCache(outDir, { ...emptyExtractCache(), files: { ...priorExtract.files, ...entries } });
+      checkpointAt = Date.now();
+    }
     const rel = f.rel;
     opts.onProgress?.({ phase: "parse", index: i, total: files.length, file: rel });
     // Unity tier first: scenes/prefabs/metas/meshes are hand-split, never

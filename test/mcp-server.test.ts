@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, writeFileSync, existsSync, rmSync, symlinkSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { Server as SdkServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -208,7 +209,9 @@ test('worker deadline releases capacity without removing a foreign build lock', 
   const pool = new ToolPool(1, 100, 1500);
   t.after(async () => { await pool.close(); rmSync(root, { recursive: true, force: true }); });
   assert.ok(acquireLockIn(cache));
-  await assert.rejects(pool.run(root, 'graft_build', {}, undefined, () => {}), /exceeded/);
+  await assert.rejects(pool.run(root, 'graft_build', {}, undefined, event => {
+    if (event.status === 'progress') (pool as any).slots[0].child.kill('SIGSTOP');
+  }), /without progress/);
   await delay(100);
   assert.ok(existsSync(join(cache, '.sync.lock')), 'the lock belongs to the test process');
   releaseLockIn(cache);
@@ -245,7 +248,8 @@ test('hookless clients get upkeep through the worker and builds are tracked', { 
   const server = await startMcpServer({ port: 0, token });
   const { client } = await connect(server.url);
   t.after(async () => { await client.close(); await server.close(); rmSync(root, { recursive: true, force: true }); });
-  await client.callTool({ name: 'graft_repo_map', arguments: { project_root: root } });
+  const answer: any = await client.callTool({ name: 'graft_repo_map', arguments: { project_root: root } });
+  assert.match(answer.content.map((item: any) => item.text).join('\n'), /refreshed this repo/);
   assert.equal(readStamp(root)?.version, runningVersion());
   assert.ok(existsSync(join(root, 'GEMINI.md')));
   assert.equal(existsSync(join(root, '.gemini', 'settings.json')), false, 'upkeep must not register HTTP');
@@ -258,4 +262,110 @@ test('shutdown tolerates concurrent keep-alive requests', { timeout: 5000 }, asy
   const requests = Array.from({ length: 20 }, () => fetch(server.url, { headers }));
   await Promise.allSettled([...requests, server.close()]);
   await server.close();
+});
+
+
+test('progress keeps a build alive beyond the inactivity deadline; log levels filter completion', { timeout: 15_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-http-progress-'));
+  writeFileSync(join(root, 'index.ts'), 'export const ready = 1;\n');
+  const pool = new ToolPool(1, 5000, 5000);
+  const server = await startMcpServer({ port: 0, token });
+  const a = await connect(server.url), b = await connect(server.url);
+  t.after(async () => { await pool.close(); await a.client.close(); await b.client.close(); await server.close(); rmSync(root, { recursive: true, force: true }); });
+  await pool.run(root, 'graft_repo_map', {}, undefined, () => {});
+  (pool as any).jobTimeoutMs = 600;
+  const cache = join(root, 'graft', '.cache');
+  assert.ok(acquireLockIn(cache));
+  const build = pool.run(root, 'graft_build', {}, undefined, () => {});
+  await delay(1500); // Longer than the deadline, but the lock wait reports progress.
+  releaseLockIn(cache);
+  assert.equal((await build).isError, false);
+  await a.client.callTool({ name: 'graft_repo_map', arguments: { project_root: root } });
+  await a.client.setLoggingLevel('error');
+  await b.client.callTool({ name: 'graft_build', arguments: { project_root: root } });
+  await delay(100);
+  assert.equal(a.events.length, 0);
+  assert.equal(b.events.filter(e => e.status === 'completed').length, 1);
+});
+
+test('query timeout serves the last saved graph; a non-building query crash emits no build failure', { timeout: 15_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-http-fallback-'));
+  writeFileSync(join(root, 'index.ts'), 'export const previous = 1;\n');
+  await buildGraph(root);
+  const pool = new ToolPool(1, 5000, 2000);
+  const events: any[] = [];
+  t.after(async () => { await pool.close(); rmSync(root, { recursive: true, force: true }); });
+  await pool.run(root, 'graft_repo_map', {}, undefined, () => {});
+  // Pause a query before it starts. There was no build, so no build-failed notification is valid.
+  (pool as any).slots[0].child.kill('SIGSTOP');
+  const answer = await pool.run(root, 'graft_find_all', { pattern: 'previous' }, undefined, e => events.push(e));
+  assert.equal(answer.isError, false, answer.text);
+  assert.match(answer.text, /may be stale/);
+  assert.match(answer.text, /previous/);
+  assert.equal(events.length, 0);
+});
+
+test('explicit MCP build widens a previous --only-dir build', { timeout: 15_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-http-wide-'));
+  for (const dir of ['src', 'lib']) { mkdirSync(join(root, dir)); writeFileSync(join(root, dir, 'index.ts'), `export const ${dir} = 1;\n`); }
+  await buildGraph(root, { onlyDirs: ['src'] });
+  const pool = new ToolPool(1);
+  t.after(async () => { await pool.close(); rmSync(root, { recursive: true, force: true }); });
+  const built = await pool.run(root, 'graft_build', {}, undefined, () => {});
+  assert.equal(built.isError, false, built.text);
+  const found = await pool.run(root, 'graft_find_all', { pattern: 'lib' }, undefined, () => {});
+  assert.match(found.text, /lib/);
+});
+
+test('a busy workspace child can take longer than the former 30-second lock limit', { timeout: 45_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-http-busy-child-'));
+  for (const name of ['one', 'two']) {
+    mkdirSync(join(root, name));
+    execFileSync('git', ['init', '-q', join(root, name)]);
+    writeFileSync(join(root, name, 'index.ts'), `export const ${name} = 1;\n`);
+  }
+  const cache = join(root, 'two', 'graft', '.cache');
+  assert.ok(acquireLockIn(cache));
+  const pool = new ToolPool(1);
+  t.after(async () => { releaseLockIn(cache); await pool.close(); rmSync(root, { recursive: true, force: true }); });
+  const pending = pool.run(root, 'graft_build', {}, undefined, () => {});
+  await delay(32_000);
+  releaseLockIn(cache);
+  const result = await pending;
+  assert.equal(result.isError, false, result.text);
+  assert.ok(existsSync(JSON.parse(result.text).graph_path));
+});
+
+
+test('failed session close logs the error and releases admission capacity', { timeout: 5000 }, async t => {
+  const server = await startMcpServer({ port: 0, token, maxSessions: 1, sessionIdleMs: 20, sessionSweepMs: 10 });
+  t.after(() => server.close());
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  const original = SdkServer.prototype.close;
+  let injected = false;
+  t.mock.method(SdkServer.prototype, 'close', async function(this: SdkServer) {
+    if (!injected) { injected = true; throw new Error('injected close failure'); }
+    return original.call(this);
+  });
+  const response = await fetch(server.url, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'idle', version: '1' } } }) });
+  assert.equal(response.status, 200);
+  await response.text();
+  await delay(100);
+  const next = await connect(server.url);
+  assert.ok(logs.some(args => args.some(arg => String(arg).includes('injected close failure'))));
+  await next.client.close();
+});
+
+test('chunked oversized JSON receives 413', async t => {
+  const server = await startMcpServer({ port: 0, token });
+  t.after(() => server.close());
+  const status = await new Promise<number | undefined>((resolve, reject) => {
+    const req = request(server.url, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' } }, res => { res.resume(); resolve(res.statusCode); });
+    req.on('error', reject);
+    req.write(' '.repeat(1_048_576));
+    req.end(' ');
+  });
+  assert.equal(status, 413);
 });

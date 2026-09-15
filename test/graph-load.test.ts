@@ -4,6 +4,8 @@
  * `graft ask` invoked repeatedly in one process) doesn't re-parse the wiring
  * graph and ask sidecar on every query.
  */
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, statSync } from "node:fs";
@@ -11,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   MAX_CACHE_ENTRIES,
+  MAX_CACHE_BYTES,
   loadGraphCached,
   loadAskIndexCached,
   __parseCount,
@@ -168,4 +171,29 @@ test('long-lived graph cache evicts the least recently used repository', () => {
   assert.equal(__parseCount.graph, 0);
   loadGraphCached(dirs[1]);
   assert.equal(__parseCount.graph, 1, 'oldest untouched entry must be reparsed');
+});
+
+
+test('byte budget retains an oversized active graph and two 40 MiB graphs', t => {
+  const dirs = Array.from({ length: 3 }, () => fixtureDir());
+  for (const dir of dirs) writeGraph({ version: 1, nodes: [node('large')], edges: [] } as GraphV1, dir);
+  const sizes = new Map(dirs.map((dir, i) => [wiringPath(dir), i === 0 ? MAX_CACHE_BYTES + 1 : 40 * 1024 * 1024]));
+  const originalStat = fs.statSync;
+  const mocked = t.mock.method(fs, 'statSync', (path: any, ...args: any[]) => {
+    const stat = (originalStat as any)(path, ...args);
+    if (sizes.has(String(path))) stat.size = sizes.get(String(path));
+    return stat;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { mocked.mock.restore(); syncBuiltinESMExports(); });
+  // Synthetic stat sizes exercise eviction without allocating hundreds of MiB in a unit test.
+  const large = loadGraphCached(dirs[0]);
+  __resetParseCounts();
+  assert.strictEqual(loadGraphCached(dirs[0]), large);
+  assert.equal(__parseCount.graph, 0);
+  const a = loadGraphCached(dirs[1]), b = loadGraphCached(dirs[2]);
+  __resetParseCounts();
+  assert.strictEqual(loadGraphCached(dirs[1]), a);
+  assert.strictEqual(loadGraphCached(dirs[2]), b);
+  assert.equal(__parseCount.graph, 0);
 });

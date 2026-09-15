@@ -4,9 +4,10 @@ import { runningVersion } from '../upkeep.js';
 import { MCP_PROGRESS_INTERVAL_MS } from './config.js';
 import { track } from '../telemetry/index.js';
 
-process.on('message', async (job: { root: string; name: string; args: Record<string, unknown>; contextDir?: string }) => {
+let upkeep: string[] | undefined;
+process.on('message', async (job: { root: string; name: string; args: Record<string, unknown>; contextDir?: string; skipRefresh?: boolean }) => {
   try {
-    for (const line of runUpkeep(job.root, runningVersion()).lines) console.error(line);
+    upkeep ??= runUpkeep(job.root, runningVersion()).lines;
     let lastProgress = 0;
     const result = await callTool(job.root, job.name, job.args, job.contextDir,
       (event) => {
@@ -15,11 +16,11 @@ process.on('message', async (job: { root: string; name: string; args: Record<str
           lastProgress = Date.now();
         }
         process.send?.({ event });
-      });
+      }, job.skipRefresh);
     const commands: Record<string, string> = { graft_build: 'build', graft_find_code: 'ask', graft_find_all: 'grep',
       graft_trace_calls: 'callers', graft_file_api: 'skeleton', graft_repo_map: 'map', graft_check_freshness: 'check' };
     if (Object.hasOwn(commands, job.name)) track('query', { command: commands[job.name], surface: 'mcp' }, { repo: job.root, host: 'mcp' });
-    process.send?.({ result });
+    process.send?.({ result: { ...result, notices: upkeep } });
   } catch (error) {
     process.send?.({ result: { text: String(error), isError: true } });
   }

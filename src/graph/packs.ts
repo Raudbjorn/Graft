@@ -43,8 +43,8 @@ import { basename, join, resolve } from "node:path";
 import { relPosix } from "../util/paths.js";
 import { languageOf } from "./extract.js";
 import { containerLangOf } from "./container.js";
-import { GENERIC_LANGS, allGenericLangs, genericLangOf, registerGenericLang } from "./generic.js";
-import { registerLspServer } from "./lsp/registry.js";
+import { GENERIC_LANGS, allGenericLangs, genericLangOf, registerGenericLang, clearPackLanguages } from "./generic.js";
+import { registerLspServer, clearPackServers } from "./lsp/registry.js";
 
 export interface LanguagePack {
   name: string;
@@ -99,6 +99,9 @@ export function loadLanguagePacks(
   const key = `${resolve(root)}\0${home}`;
   const result: PackLoadResult = { loaded: [], skipped: [] };
   if (seenRoots.has(key)) return result;
+  clearLanguagePacks();
+  clearPackLanguages();
+  clearPackServers();
   seenRoots.add(key);
   const warn = opts.warn ?? ((m: string) => console.error(m));
 
@@ -256,10 +259,12 @@ export function loadNamespaces(root: string, repoFiles: readonly string[]): void
   }
 }
 
-/** Test seam: forget every loaded pack and root, so tests can load fixtures afresh. */
-export function resetLanguagePacksForTest(): void {
+/** Clear discovery and namespace bookkeeping before selecting another repository. */
+export function clearLanguagePacks(): void {
   registered.clear();
   registeredDirs.clear();
   seenRoots.clear();
   namespacedRoots.clear();
 }
+
+export const resetLanguagePacksForTest = clearLanguagePacks;

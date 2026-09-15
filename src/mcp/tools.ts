@@ -241,6 +241,7 @@ export async function callTool(
   args: Record<string, unknown>,
   dirOverride?: string,
   onBuild?: BuildListener,
+  skipRefresh = false,
 ): Promise<{ text: string; isError: boolean }> {
   try {
     const name = canonicalToolName(requestedName);
@@ -253,7 +254,7 @@ export async function callTool(
     // here, so the formatters downstream can put a dollar figure in the nudge.
     setInputRate(sessionInputRate(root));
     let note: string | null = null;
-    if (!NO_REFRESH_TOOLS.has(name)) {
+    if (!skipRefresh && !NO_REFRESH_TOOLS.has(name)) {
       const r = ws
         ? await ensureFreshChildren(root, ws.children, { contextDir: dirOverride, onBuild })
         : await ensureFreshGraph(root, { contextDir: dirOverride, onBuild });

@@ -1,12 +1,17 @@
 // Explicit daemon registration tests opt in with a non-secret test token.
 process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 import { test } from 'node:test';
+import { planInit } from '../src/hosts/plan.js';
+import { planRetract } from '../src/hosts/retract.js';
+import { runInit } from '../src/claude/init.js';
+import { spawnSync } from 'node:child_process';
+import { mcpPort, mcpUrl, jobTimeoutMs } from '../src/mcp/config.js';
 import assert from 'node:assert/strict';
 
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { registerMcpConfigs, serverEntry } from '../src/hosts/mcp-config.js';
+import { registerMcpConfigs, serverEntry, mcpTargets } from '../src/hosts/mcp-config.js';
 
 function fresh(): string { return mkdtempSync(join(tmpdir(), 'graft-mcpcfg-')); }
 
@@ -151,4 +156,60 @@ test('daemon URL rejects remote origins and credential-bearing URLs', () => {
       assert.throws(serverEntry, /loopback/);
     }
   } finally { if (saved === undefined) delete process.env.GRAFT_MCP_URL; else process.env.GRAFT_MCP_URL = saved; }
+});
+
+test('legacy OpenCode command arrays are retired without touching remote entries', () => {
+  const repo = fresh(), home = fresh();
+  mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+  const path = join(repo, 'opencode.json');
+  writeFileSync(path, JSON.stringify({ mcp: { graft: { type: 'local', command: ['npx', '-y', '@nanonets/graft', 'mcp'] }, foreign: {} } }));
+  const saved = process.env.GRAFT_MCP_TOKEN;
+  delete process.env.GRAFT_MCP_TOKEN;
+  try {
+    const result = registerMcpConfigs(repo, ['agents'], { home });
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { mcp: { foreign: {} } });
+    assert.equal(result[0].action, 'skipped');
+    assert.match((result[0] as any).reason, /GRAFT_MCP_TOKEN/);
+  } finally { if (saved !== undefined) process.env.GRAFT_MCP_TOKEN = saved; }
+});
+
+
+test('invalid daemon URL cannot break planning, retraction or --no-mcp init', () => {
+  const repo = fresh(), home = fresh(), saved = process.env.GRAFT_MCP_URL;
+  process.env.GRAFT_MCP_URL = 'invalid';
+  try {
+    assert.doesNotThrow(() => mcpTargets(repo, ['cursor'], { home }));
+    assert.doesNotThrow(() => planInit(repo, { home }));
+    assert.doesNotThrow(() => planRetract(repo, { home }));
+    assert.doesNotThrow(() => runInit(repo, { build: false, mcp: false, global: false, home }));
+    assert.throws(() => registerMcpConfigs(repo, ['cursor'], { home }), /Invalid URL/);
+  } finally { if (saved === undefined) delete process.env.GRAFT_MCP_URL; else process.env.GRAFT_MCP_URL = saved; }
+});
+
+
+test('daemon address and configurable timeout share validated environment settings', () => {
+  const url = process.env.GRAFT_MCP_URL, timeout = process.env.GRAFT_MCP_JOB_TIMEOUT_MS;
+  try {
+    process.env.GRAFT_MCP_URL = 'http://localhost:9000/mcp';
+    assert.equal(mcpPort(), 9000);
+    assert.equal(mcpUrl(), 'http://127.0.0.1:9000/mcp');
+    process.env.GRAFT_MCP_JOB_TIMEOUT_MS = '600000';
+    assert.equal(jobTimeoutMs(), 600000);
+    process.env.GRAFT_MCP_JOB_TIMEOUT_MS = '0';
+    assert.throws(jobTimeoutMs, /positive/);
+  } finally {
+    if (url === undefined) delete process.env.GRAFT_MCP_URL; else process.env.GRAFT_MCP_URL = url;
+    if (timeout === undefined) delete process.env.GRAFT_MCP_JOB_TIMEOUT_MS; else process.env.GRAFT_MCP_JOB_TIMEOUT_MS = timeout;
+  }
+});
+
+test('CLI missing-token summary names setup, not --no-mcp', () => {
+  const repo = fresh();
+  const run = spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--agents', 'claude', 'cursor', '--no-build', '--no-global', '--no-hooks', '--no-statusline'], {
+    encoding: 'utf8', timeout: 15_000, env: { ...process.env, GRAFT_MCP_TOKEN: '', GRAFT_TELEMETRY: '0' },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stderr, /export GRAFT_MCP_TOKEN/);
+  assert.doesNotMatch(run.stderr, /registration \(--no-mcp\)/);
+  assert.doesNotMatch(run.stderr, /✓ mcp cursor:.*skipped/);
 });

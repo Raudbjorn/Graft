@@ -13,7 +13,7 @@ import { canonicalToolName } from './tool-names.js';
 import { ToolPool } from './pool.js';
 import type { BuildEvent } from './build.js';
 
-import { DEFAULT_MCP_PORT, MCP_BODY_LIMIT_BYTES, MCP_MAX_SESSIONS, MCP_MAX_ROOTS_PER_SESSION, MCP_WORKERS, MCP_SESSION_IDLE_MS, MCP_SESSION_SWEEP_MS, MCP_REQUEST_TIMEOUT_MS } from './config.js';
+import { mcpPort, DEFAULT_MCP_PORT, MCP_BODY_LIMIT_BYTES, MCP_MAX_SESSIONS, MCP_MAX_ROOTS_PER_SESSION, MCP_WORKERS, MCP_SESSION_IDLE_MS, MCP_SESSION_SWEEP_MS, MCP_REQUEST_TIMEOUT_MS } from './config.js';
 export { DEFAULT_MCP_PORT } from './config.js';
 
 function absoluteDirectory(value: unknown, label: string): string {
@@ -33,12 +33,14 @@ function outputDirectory(value: unknown): string | undefined {
     return join(outputDirectory(parent)!, value.slice(parent.length));
   }
 }
+class BodyTooLargeError extends Error {}
+
 async function readBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MCP_BODY_LIMIT_BYTES) throw new Error('Request body exceeds 1 MiB');
+    if (size > MCP_BODY_LIMIT_BYTES) throw new BodyTooLargeError('Request body exceeds 1 MiB');
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -50,6 +52,16 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
   const pool = new ToolPool(opts.workers ?? MCP_WORKERS, opts.idleMs);
   type Session = { server: Server; transport: StreamableHTTPServerTransport; roots: Set<string>; touched: number; active: number; streams: number };
   const sessions = new Map<string, Session>();
+  const closeSession = async (session: Session) => {
+    if (session.transport.sessionId) sessions.delete(session.transport.sessionId);
+    session.roots.clear();
+    try { await session.server.close(); }
+    catch (error) {
+      console.error('MCP session close failed:', error);
+      try { await session.transport.close(); }
+      catch (error) { console.error('MCP transport close failed:', error); }
+    }
+  };
   let pendingSessions = 0;
   let port = 0;
   let shuttingDown = false;
@@ -79,7 +91,7 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
       let body: unknown;
       if (req.method === 'POST') {
         if (!req.headers['content-type']?.startsWith('application/json')) return reject(415, 'Expected application/json');
-        try { body = await readBody(req); } catch (error) { return reject(String(error).includes('1 MiB') ? 413 : 400, 'Invalid request body'); }
+        try { body = await readBody(req); } catch (error) { return reject(error instanceof BodyTooLargeError ? 413 : 400, 'Invalid request body'); }
       }
       const id = req.headers['mcp-session-id'];
       let session = typeof id === 'string' ? sessions.get(id) : undefined;
@@ -115,14 +127,14 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
             const progressToken = request.params._meta?.progressToken;
             const result = await pool.run(root, name, args, contextDir, (event: BuildEvent) => {
               if (progressToken !== undefined && event.progress !== undefined)
-                void extra.sendNotification({ method: 'notifications/progress', params: { progressToken, progress: ++progress, message: `${event.project_root}: ${event.progress}/${event.total ?? '?'}` } }).catch(() => {});
+                void extra.sendNotification({ method: 'notifications/progress', params: { progressToken, progress: ++progress, message: `${event.project_root}: ${event.progress}/${event.total ?? '?'}` } }).catch(error => console.error('MCP progress notification failed:', error));
               if (event.status !== 'completed' && event.status !== 'failed') return;
               for (const subscriber of sessions.values()) {
                 if (subscriber.roots.has(root) || subscriber.roots.has(event.project_root))
-                  void subscriber.server.sendLoggingMessage({ level: event.status === 'failed' ? 'error' : 'info', logger: 'graft.build', data: event }).catch(() => {});
+                  void subscriber.server.sendLoggingMessage({ level: event.status === 'failed' ? 'error' : 'info', logger: 'graft.build', data: event }, subscriber.transport.sessionId).catch(error => console.error('MCP build notification failed:', error));
               }
             }).finally(() => { current.active--; current.touched = Date.now(); });
-            return { content: [{ type: 'text' as const, text: result.text }], isError: result.isError };
+            return { content: [{ type: 'text' as const, text: result.text }, ...(result.notices ?? []).map(text => ({ type: 'text' as const, text }))], isError: result.isError };
           } catch (error) {
             return { content: [{ type: 'text' as const, text: error instanceof Error ? error.message : String(error) }], isError: true };
           }
@@ -142,14 +154,14 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
       if (!res.headersSent) reject(500, 'Internal server error'); else res.end();
     } finally {
       if (reserved) pendingSessions--;
-      if (provisional && !provisional.transport.sessionId) await provisional.server.close().catch(() => {});
+      if (provisional && !provisional.transport.sessionId) await closeSession(provisional);
     }
   });
   http.requestTimeout = MCP_REQUEST_TIMEOUT_MS;
-  await new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(opts.port ?? DEFAULT_MCP_PORT, '127.0.0.1', resolve); });
+  await new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(opts.port ?? mcpPort(), '127.0.0.1', resolve); });
   port = (http.address() as { port: number }).port;
   const expiry = setInterval(() => {
-    for (const session of sessions.values()) if (!session.active && !session.streams && Date.now() - session.touched > (opts.sessionIdleMs ?? MCP_SESSION_IDLE_MS)) void session.server.close().catch(() => {});
+    for (const session of sessions.values()) if (!session.active && !session.streams && Date.now() - session.touched > (opts.sessionIdleMs ?? MCP_SESSION_IDLE_MS)) void closeSession(session);
   }, opts.sessionSweepMs ?? MCP_SESSION_SWEEP_MS);
   expiry.unref();
   let closing: Promise<void> | undefined;
@@ -159,7 +171,7 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
       clearInterval(expiry);
       const stopped = new Promise<void>(resolve => http.close(() => resolve()));
       try {
-        await Promise.allSettled([...sessions.values()].map(session => session.server.close()));
+        await Promise.allSettled([...sessions.values()].map(closeSession));
       } finally {
         http.closeAllConnections();
         await pool.close();
