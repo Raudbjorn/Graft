@@ -2,6 +2,7 @@
  * The MCP tools, as pure functions over the existing engine.
  * `callTool` never throws — hosts get soft errors as isError content.
  */
+import { buildForMcp, type BuildListener } from './build.js';
 import { Graft } from '../engine.js';
 import { join } from 'node:path';
 import { formatAsk, skeleton, formatSkeleton } from '../ask/ask.js';
@@ -35,13 +36,14 @@ export interface ToolDef {
   inputSchema: object;
 }
 
-const NO_GRAPH = 'no graph found — run `graft build` first';
+const NO_GRAPH = 'no graph found — call graft_build with project_root, or run `graft build` first';
 
 function unknownSymbolText(query: string): string {
   return `no symbol "${query}" in the graph — check spelling or run \`graft build\``;
 }
 
 export const TOOLS: ToolDef[] = [
+  { name: 'graft_build', description: 'Build the structural graph and markdown cards locally ($0, no API key). Returns output paths and statistics. Use before querying an unindexed repository.', inputSchema: { type: 'object', properties: {} } },
   {
     name: 'graft_find_code',
     description:
@@ -238,9 +240,12 @@ export async function callTool(
   requestedName: string,
   args: Record<string, unknown>,
   dirOverride?: string,
+  onBuild?: BuildListener,
+  skipRefresh = false,
 ): Promise<{ text: string; isError: boolean }> {
   try {
     const name = canonicalToolName(requestedName);
+    if (name === 'graft_build') return { text: JSON.stringify(await buildForMcp(root, dirOverride, onBuild)), isError: false };
     const ws = readWorkspace(root, dirOverride);
     // Freshness first: an answer that cites file:line has to be about the code as
     // it is right now, including edits nobody has committed (or even saved through
@@ -249,10 +254,10 @@ export async function callTool(
     // here, so the formatters downstream can put a dollar figure in the nudge.
     setInputRate(sessionInputRate(root));
     let note: string | null = null;
-    if (!NO_REFRESH_TOOLS.has(name)) {
+    if (!skipRefresh && !NO_REFRESH_TOOLS.has(name)) {
       const r = ws
-        ? await ensureFreshChildren(root, ws.children, { contextDir: dirOverride })
-        : await ensureFreshGraph(root, { contextDir: dirOverride });
+        ? await ensureFreshChildren(root, ws.children, { contextDir: dirOverride, onBuild })
+        : await ensureFreshGraph(root, { contextDir: dirOverride, onBuild });
       note = refreshNote(r);
     }
     const fed = ws ? await callWorkspaceTool(root, dirOverride, name, args) : null;

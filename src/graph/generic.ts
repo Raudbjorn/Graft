@@ -111,11 +111,18 @@ export function registerGenericLang(row: GenericLang): void {
   for (const e of row.exts) byExt.set(e.toLowerCase(), row);
 }
 
-/** Test seam: forget every pack row, so one test's pack cannot leak into the next. */
-export function resetGenericLangsForTest(): void {
+/** Forget repository pack rows and compiled queries before switching roots. */
+export function clearPackLanguages(): void {
+  for (const row of packLangs) {
+    const query = loaded.get(row.name)?.query as { delete(): void } | undefined;
+    query?.delete();
+    loaded.delete(row.name);
+  }
   for (const l of packLangs) for (const e of l.exts) byExt.delete(e.toLowerCase());
   packLangs.length = 0;
 }
+
+export const resetGenericLangsForTest = clearPackLanguages;
 
 /** The generic language for a path, or null if no breadth grammar claims it. */
 export function genericLangOf(path: string): GenericLang | null {

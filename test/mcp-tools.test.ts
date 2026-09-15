@@ -86,8 +86,9 @@ function multiDirRepo(): string {
   return d;
 }
 
-test('TOOLS lists the six tools with schemas', async () => {
+test('TOOLS lists the seven tools with schemas', async () => {
   assert.deepEqual(TOOLS.map((t) => t.name), [
+    'graft_build',
     'graft_find_code',
     'graft_file_api',
     'graft_check_freshness',
@@ -345,8 +346,8 @@ const RENAMES: Record<string, string> = {
   graft_check: 'graft_check_freshness',
 };
 
-test('TOOLS advertises exactly the six new names — the roster does not grow', () => {
-  assert.deepEqual([...TOOLS.map((t) => t.name)].sort(), Object.values(RENAMES).sort());
+test('TOOLS advertises the six query tools and explicit build', () => {
+  assert.deepEqual([...TOOLS.map((t) => t.name)].sort(), [...Object.values(RENAMES), 'graft_build'].sort());
 });
 
 test('every old tool name still resolves to its replacement', () => {

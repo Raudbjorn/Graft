@@ -29,10 +29,13 @@ const packServers: LspServer[] = [];
 export function registerLspServer(row: LspServer): void {
   packServers.push(row);
 }
-/** Test seam: forget every pack-declared server. */
-export function resetLspServersForTest(): void {
+/** Forget pack-declared servers and their resolved executables when switching roots. */
+export function clearPackServers(): void {
+  for (const server of packServers) resolved.delete(server.command);
   packServers.length = 0;
 }
+
+export const resetLspServersForTest = clearPackServers;
 
 const resolved = new Map<string, string | null>();
 /** Resolve a command to its ABSOLUTE path via the login shell's PATH. `spawn`

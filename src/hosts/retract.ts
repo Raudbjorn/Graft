@@ -438,7 +438,7 @@ function targets(repo: string, opts: RetractOpts): Target[] {
   // 2. MCP registrations. Asking for every host id at once yields the union of
   //    config files, each already carrying its format and top-level key.
   const allIds = HOSTS.map((h) => h.id).filter((id) => !exclude.has(id));
-  for (const t of mcpTargets(repo, allIds, { home })) {
+  for (const t of mcpTargets(repo, allIds, { home, includeRetired: true })) {
     if (opts.global === false && t.scope === 'global') continue;
     add({
       hostId: t.hostId, path: t.path, what: t.what, scope: t.scope,

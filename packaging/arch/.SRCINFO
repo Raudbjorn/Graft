@@ -1,0 +1,20 @@
+pkgbase = graft-git
+	pkgdesc = Local repository context graphs with a shared MCP HTTP daemon
+	pkgver = 0.18.0.r1.g94779d7
+	pkgrel = 1
+	url = https://github.com/Raudbjorn/Graft
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = npm
+	makedepends = python
+	makedepends = base-devel
+	depends = nodejs>=20
+	depends = git
+	provides = graft
+	conflicts = graft
+	options = !strip
+	source = graft-aa347fa74a58::git+https://github.com/Raudbjorn/Graft.git
+	sha256sums = SKIP
+
+pkgname = graft-git

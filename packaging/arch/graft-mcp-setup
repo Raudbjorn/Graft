@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/graft"
+install -d -m 700 "$config_dir"
+node --input-type=module - "$config_dir/mcp.env" <<'JS'
+import { existsSync, lstatSync, writeFileSync, chmodSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+const file = process.argv[2];
+if (existsSync(file)) {
+  const stat = lstatSync(file);
+  if (!stat.isFile() || stat.uid !== process.getuid()) throw new Error('Token file must be a regular file owned by you');
+} else {
+  writeFileSync(file, `GRAFT_MCP_TOKEN=${randomBytes(32).toString('hex')}\n`, { mode: 0o600, flag: 'wx' });
+}
+chmodSync(file, 0o600);
+JS
+systemctl --user daemon-reload
+systemctl --user enable --now graft-mcp.service
+printf 'Graft MCP is enabled. Its address is recorded in the service journal.\n'
+printf 'Before starting your MCP client, run: set -a; source %q; set +a\n' "$config_dir/mcp.env"

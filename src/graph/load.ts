@@ -34,6 +34,10 @@ interface CacheEntry<T> {
   value: T | null;
 }
 
+// Limits apply separately to each cache; bytes measure serialized size, not JS heap.
+export const MAX_CACHE_ENTRIES = 16;
+export const MAX_CACHE_BYTES = 128 * 1024 * 1024;
+
 const graphCache = new Map<string, CacheEntry<GraphV1>>();
 const askIndexCache = new Map<string, CacheEntry<AskIndex>>();
 
@@ -72,11 +76,21 @@ function loadCached<T>(
   }
   const cached = cache.get(path);
   if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+    cache.delete(path);
+    cache.set(path, cached);
     return cached.value;
   }
   onParse();
   const value = parse();
+  cache.delete(path);
   cache.set(path, { mtimeMs: st.mtimeMs, size: st.size, value });
+  // ponytail: retain one oversized active graph; memory follows that graph, not a hard RSS ceiling.
+  let bytes = [...cache.values()].reduce((sum, entry) => sum + entry.size, 0);
+  while (cache.size > 1 && (cache.size > MAX_CACHE_ENTRIES || bytes > MAX_CACHE_BYTES)) {
+    const oldest = cache.keys().next().value!;
+    bytes -= cache.get(oldest)!.size;
+    cache.delete(oldest);
+  }
   return value;
 }
 

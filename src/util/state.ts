@@ -26,7 +26,7 @@ export function emptyStats(): Stats {
     staleCount: 0, dirty: false, syncing: false, syncedAt: null, lastFile: null };
 }
 
-const LOCK_FILE = '.sync.lock';
+export const LOCK_FILE = '.sync.lock';
 
 /**
  * Where the pieces this module manages (the stats cache, the sync lock,
@@ -196,6 +196,21 @@ export function acquireLockIn(cache: string): boolean {
     let stale: boolean;
     try { stale = Date.now() - statSync(p).mtimeMs >= LOCK_STALE_MS; } catch { stale = true; }
     if (!stale) return false;
+    // A large, progressing build can outlive the stale age. Never steal its lock.
+    try {
+      const owner = JSON.parse(readFileSync(p, 'utf8')).pid;
+      if (Number.isInteger(owner) && owner > 0) {
+        try { process.kill(owner, 0); return false; }
+        catch (error: any) {
+          if (error.code !== 'ESRCH') {
+            if (error.code !== 'EPERM') console.error('Cannot check graph lock owner:', error);
+            return false;
+          }
+        }
+      }
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') console.error('Reclaiming unreadable stale graph lock:', error);
+    }
     try { rmSync(p); } catch { /* another process reclaimed it */ }
     try { writeFileSync(p, payload, { flag: 'wx' }); return true; }
     catch (e2: any) { if (e2?.code === 'EEXIST') return false; throw e2; }

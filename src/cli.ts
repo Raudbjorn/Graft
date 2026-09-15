@@ -4,6 +4,7 @@
  * map, init. Git is the sync: commit graft/ and a clone has the graph. A
  * workspace parent (≥2 git children) federates query commands across children.
  */
+import { mcpPort } from './mcp/config.js';
 import "dotenv/config";
 import { Command } from "commander";
 import { join, relative, resolve } from "node:path";
@@ -784,13 +785,19 @@ program
 
 program
   .command("mcp")
-  .description("Serve the graph over MCP (stdio) — exposes graft_find_code, graft_trace_calls, graft_find_all, graft_file_api, graft_repo_map and graft_check_freshness as tools")
-  .argument(...DIR_ARG)
-  .action(async (dirArg: string | undefined) => {
-    const dir = noteQuery(queryRoot(dirArg));
+  .description("Serve local repositories over MCP Streamable HTTP with SSE notifications")
+  .option("--port <port>", "loopback HTTP port (defaults to GRAFT_MCP_URL)")
+  .action(async (opts: { port?: string }) => {
+    const port = opts.port === undefined ? mcpPort() : Number(opts.port);
+    if (opts.port !== undefined && port !== mcpPort()) throw new Error("--port must match GRAFT_MCP_URL; set that URL for both the daemon and clients");
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("port must be 1–65535");
+    if (program.opts<GlobalOpts>().dir) throw new Error("MCP uses per-call project_root/context_dir, not --dir");
     const { startMcpServer } = await import("./mcp/server.js");
-    const globalOpts = program.opts<{ dir?: string }>();
-    startMcpServer(dir, globalOpts.dir, currentVersion);
+    const server = await startMcpServer({ port, token: process.env.GRAFT_MCP_TOKEN ?? '', version: currentVersion });
+    console.error(`graft MCP → ${server.url}`);
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
+      void server.close().then(() => process.exit(0));
+    });
   });
 
 program
@@ -1142,7 +1149,7 @@ function wireTarget(
       for (const s of res.shims) console.error(`✓ wrote ${s}`);
       console.error(`✓ wrote ${res.skill}`);
       if (res.mcp.action === "skipped")
-        console.error(`· skipped Claude Code MCP registration (--no-mcp)`);
+        console.error(`· skipped Claude Code MCP registration (${res.mcp.reason ?? "--no-mcp"})`);
       else if (res.mcp.action === "skipped-unparseable")
         console.error(`⚠ .mcp.json: ${res.mcp.path} left unchanged (not valid JSON) — add the graft server manually`);
       else if (res.mcp.action === "unchanged")
@@ -1166,7 +1173,7 @@ function wireTarget(
         global: opts.global,
       });
       for (const w of r.written) console.error(`✓ ${w.id}: ${w.path} (${w.action})`);
-      for (const m of r.mcp) console.error(`✓ mcp ${m.id}: ${m.path} (${m.action})`);
+      for (const m of r.mcp) console.error(`${m.action.startsWith("skipped") ? "·" : "✓"} mcp ${m.id}: ${m.path} (${m.action}${m.action === "skipped" && m.reason ? `: ${m.reason}` : ""})`);
       for (const h of r.hooks) console.error(`✓ hook ${h.id}: ${h.path} (${h.action})`);
       // Only worth saying when there was actually something out-of-repo to skip.
       if (opts.global === false && selectedWrites(plan, ids).some((w) => w.scope === "global"))

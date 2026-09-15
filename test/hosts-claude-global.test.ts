@@ -1,3 +1,5 @@
+// Explicit daemon registration tests opt in with a non-secret test token.
+process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 /**
  * The user-level Claude Code install — graft's wiring outside any repo.
  *

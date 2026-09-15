@@ -31,6 +31,7 @@
  * too — it copies the parent checkout's graph in (`./seed.ts`) and then treats the
  * difference between the two checkouts as ordinary drift, which is exactly what it is.
  */
+import type { BuildListener } from '../mcp/build.js';
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { contextDirFor } from "../context/node-file.js";
@@ -58,6 +59,7 @@ export interface RefreshResult {
 }
 
 export interface RefreshOptions {
+  onBuild?: BuildListener;
   contextDir?: string;
   /** Skip everything (the `--no-refresh` flag). */
   disabled?: boolean;
@@ -213,7 +215,16 @@ export async function ensureFreshGraph(root: string, opts: RefreshOptions = {}):
       // here so an auto-rebuild keeps the same limited file set instead of silently
       // widening to the whole tree.
       const onlyDirs = readFingerprint(outDir)?.onlyDirs;
-      await buildGraph(dir, { contextDir: opts.contextDir, graphOnly: true, onlyDirs });
+      opts.onBuild?.({ project_root: dir, context_dir: outDir, status: 'started' });
+      try {
+        const result = await buildGraph(dir, { contextDir: opts.contextDir, graphOnly: true, onlyDirs,
+          onProgress: ({ index, total }) => opts.onBuild?.({ project_root: dir, context_dir: outDir, status: 'progress', progress: index, total }),
+        });
+        opts.onBuild?.({ project_root: dir, context_dir: outDir, status: 'completed', graph_path: result.graphPath });
+      } catch (error) {
+        opts.onBuild?.({ project_root: dir, context_dir: outDir, status: 'failed', message: String(error) });
+        throw error;
+      }
       invalidateGraphCaches(outDir);
       return { refreshed: true, drift: drift ?? undefined, note: seedNote };
     } finally {
@@ -248,7 +259,7 @@ export async function ensureFreshChildren(
     // one, each child would build into that single shared dir in turn, the last
     // clobbering the rest.) A child's graph always lives in its own `<child>/graft`,
     // which is exactly how `loadWorkspaceGraphs` reads them back.
-    const r = await ensureFreshGraph(resolve(root, child), { disabled: opts.disabled });
+    const r = await ensureFreshGraph(resolve(root, child), { disabled: opts.disabled, onBuild: opts.onBuild });
     if (!r.refreshed) continue;
     refreshedIn.push(child);
     files += r.drift ? driftCount(r.drift) : 0;

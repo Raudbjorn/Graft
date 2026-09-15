@@ -471,3 +471,18 @@ test("a build repairs an edit that leaves size and mtime untouched", async () =>
   assert.ok(ids.includes("src/math.ts#sum"), "and the graph reflects the rename");
   assert.equal(ids.includes("src/math.ts#add"), false, "the old symbol is gone");
 });
+
+test('interrupted extraction resumes from its checkpoint', async t => {
+  const root = repo();
+  const clock = Date.now;
+  let elapsed = 0;
+  const mocked = t.mock.method(Date, 'now', () => clock() + elapsed);
+  await assert.rejects(buildGraph(root, { onProgress: ({ index }) => {
+    if (index === 0) elapsed += 31_000;
+    if (index === 1) throw new Error('interrupted after checkpoint');
+  } }), /interrupted/);
+  mocked.mock.restore();
+  const retry = await buildGraph(root);
+  assert.ok(retry.reused >= 1, 'completed extraction survives interruption');
+  assert.ok(retry.parsed >= 1, 'unfinished files are still parsed');
+});

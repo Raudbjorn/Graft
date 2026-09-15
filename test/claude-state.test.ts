@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, mkdirSync, readdirSync, utimesSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -40,13 +40,17 @@ test('lock is exclusive then releasable', () => {
   assert.equal(acquireLock(d), true, 'reacquire after release');
 });
 
-test('acquireLock reclaims a stale lock', () => {
+test('acquireLock reclaims a stale lock only after its owner exits', t => {
   const d = fresh();
   assert.equal(acquireLock(d), true);
   const p = join(cacheDir(d), '.sync.lock');
   const old = (Date.now() - LOCK_STALE_MS - 1000) / 1000;
   utimesSync(p, old, old);
-  assert.equal(acquireLock(d), true, 'stale lock reclaimed');
+  assert.equal(acquireLock(d), false, 'a live owner keeps its old lock');
+  writeFileSync(p, JSON.stringify({ pid: 2147483647 }));
+  utimesSync(p, old, old);
+  t.mock.method(process, 'kill', () => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); });
+  assert.equal(acquireLock(d), true, 'dead owner lock reclaimed');
 });
 
 test('writeJsonAtomic leaves no scratch file behind when the write fails', () => {
