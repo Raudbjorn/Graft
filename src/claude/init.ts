@@ -6,7 +6,7 @@ import { installClaudeGlobal, type GlobalWrite } from '../hosts/claude-global.js
 import { mergeGraftSettings } from './settings-merge.js';
 import { statuslineShim, hooksShim } from './shim-template.js';
 import { skillTemplate } from './skill-template.js';
-import { mergeJsonKey, serverEntry, type McpWrite } from '../hosts/mcp-config.js';
+import { retireLegacyMcpConfigs, mergeJsonKey, serverEntry, type McpWrite } from '../hosts/mcp-config.js';
 import { hasGraftIndex } from '../graph/root.js';
 import type { PlannedWrite } from '../hosts/plan.js';
 
@@ -94,6 +94,7 @@ export function runInit(
   // exposes graft_find_code/graft_trace_calls/etc. as tools — the same keyed merge the
   // other hosts use (existing servers preserved; unparseable files skipped).
   // `--no-mcp` skips this write: Claude Code can still call the CLI via the skill.
+  if (opts.mcp !== false && !process.env.GRAFT_MCP_TOKEN?.trim()) retireLegacyMcpConfigs(dir, ['claude'], { home: opts.home, global: opts.global });
   const mcp = opts.mcp === false
     ? { id: 'claude', path: mcpTarget, action: 'skipped' as const }
     : mergeJsonKey('claude', mcpTarget, 'mcpServers', serverEntry());

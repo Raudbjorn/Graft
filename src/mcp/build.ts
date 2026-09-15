@@ -1,3 +1,4 @@
+import { MCP_BUILD_LOCK_WAIT_MS, MCP_BUILD_LOCK_POLL_MS } from './config.js';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildGraph } from '../graph/build.js';
@@ -5,7 +6,7 @@ import { discoverWorkspaceChildren } from '../graph/scopes.js';
 import { readFingerprint } from '../graph/fingerprint.js';
 import { invalidateGraphCaches } from '../graph/load.js';
 import { releaseOnSignal } from '../graph/refresh.js';
-import { isWorkspaceBuildRoot, writeWorkspace } from '../graph/workspace.js';
+import { clearParentGraft, isWorkspaceBuildRoot, writeWorkspace } from '../graph/workspace.js';
 import { CACHE_DIR, contextDirFor, ensureGitignored } from '../context/node-file.js';
 import { acquireLockIn, releaseLockIn } from '../util/state.js';
 
@@ -25,10 +26,10 @@ export async function buildForMcp(root: string, contextDir?: string, onBuild?: B
   const event = (status: BuildEvent['status'], extra: Partial<BuildEvent> = {}) =>
     onBuild?.({ project_root: root, context_dir: out, status, ...extra });
   const cache = join(out, CACHE_DIR);
-  const deadline = Date.now() + 300_000;
+  const deadline = Date.now() + MCP_BUILD_LOCK_WAIT_MS;
   while (!acquireLockIn(cache)) {
     if (Date.now() >= deadline) throw new Error('Timed out waiting for the graph build lock');
-    await delay(50);
+    await delay(MCP_BUILD_LOCK_POLL_MS);
   }
   const unhook = releaseOnSignal(cache);
   event('started');
@@ -37,7 +38,8 @@ export async function buildForMcp(root: string, contextDir?: string, onBuild?: B
       const children = discoverWorkspaceChildren(root).sort();
       const results: Record<string, unknown>[] = [];
       for (const child of children) results.push(await buildForMcp(join(root, child), undefined, onBuild));
-      // Keep existing files: a custom output directory may contain user data.
+      clearParentGraft(root, contextDir, true);
+      invalidateGraphCaches(out);
       const graph_path = writeWorkspace(root, { version: 1, children }, contextDir);
       ensureGitignored(root, out);
       event('completed', { graph_path });

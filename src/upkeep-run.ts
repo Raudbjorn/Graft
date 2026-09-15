@@ -5,6 +5,7 @@
  * writes, no spawning): this file is the only place that knows how to actually
  * re-run the wiring, and it is deliberately thin.
  */
+import { retireLegacyMcpConfigs } from './hosts/mcp-config.js';
 import { runInit } from './claude/init.js';
 import { runHostsInit } from './hosts/init.js';
 import { graftCliPath } from './claude/paths.js';
@@ -40,14 +41,16 @@ export interface UpkeepResult {
  * `opts.global`/`opts.hooks`, replayed from the stamp.
  */
 function rewriteWiring(repo: string, hosts: string[], opts: WiringOpts): void {
+  retireLegacyMcpConfigs(repo, hosts, { global: opts.global });
+  // MCP transport/authentication setup is explicit; a hook cannot provision a daemon.
   // `opts.global` reaches the claude layer for the same reason `opts.statusline` does:
   // its `~/.claude` writes (hosts/claude-global.ts) are out-of-repo, and a user who
   // declined those at init time must keep declining them on every replay.
   if (hosts.includes('claude'))
-    runInit(repo, { build: false, cliPath: graftCliPath(), mcp: opts.mcp, hooks: opts.hooks, statusline: opts.statusline, global: opts.global });
+    runInit(repo, { build: false, cliPath: graftCliPath(), mcp: false, hooks: opts.hooks, statusline: opts.statusline, global: opts.global });
   const others = hosts.filter((h) => h !== 'claude');
   if (others.length)
-    runHostsInit(repo, { agents: others, global: opts.global, mcp: opts.mcp, hooks: opts.hooks });
+    runHostsInit(repo, { agents: others, global: opts.global, mcp: false, hooks: opts.hooks });
 }
 
 /**

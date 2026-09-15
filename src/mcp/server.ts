@@ -1,3 +1,4 @@
+import { maybeFlushInBackground } from '../telemetry/flush.js';
 import { createServer, type IncomingMessage } from 'node:http';
 import { realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -12,7 +13,8 @@ import { canonicalToolName } from './tool-names.js';
 import { ToolPool } from './pool.js';
 import type { BuildEvent } from './build.js';
 
-export const DEFAULT_MCP_PORT = 8421;
+import { DEFAULT_MCP_PORT, MCP_BODY_LIMIT_BYTES, MCP_MAX_SESSIONS, MCP_MAX_ROOTS_PER_SESSION, MCP_WORKERS, MCP_SESSION_IDLE_MS, MCP_SESSION_SWEEP_MS, MCP_REQUEST_TIMEOUT_MS } from './config.js';
+export { DEFAULT_MCP_PORT } from './config.js';
 
 function absoluteDirectory(value: unknown, label: string): string {
   if (typeof value !== 'string' || !isAbsolute(value)) throw new Error(`${label} must be an absolute directory path`);
@@ -36,17 +38,21 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 1_048_576) throw new Error('Request body exceeds 1 MiB');
+    if (size > MCP_BODY_LIMIT_BYTES) throw new Error('Request body exceeds 1 MiB');
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-export async function startMcpServer(opts: { port?: number; token: string; version?: string; workers?: number; idleMs?: number }) {
+export async function startMcpServer(opts: { port?: number; token: string; version?: string; workers?: number; idleMs?: number; sessionIdleMs?: number; sessionSweepMs?: number; maxSessions?: number }) {
   if (!opts.token || /\s/.test(opts.token)) throw new Error('Set GRAFT_MCP_TOKEN to a nonempty bearer token without whitespace');
-  const pool = new ToolPool(opts.workers ?? 4, opts.idleMs);
-  type Session = { server: Server; transport: StreamableHTTPServerTransport; roots: Set<string>; touched: number; active: number };
+  maybeFlushInBackground();
+  const pool = new ToolPool(opts.workers ?? MCP_WORKERS, opts.idleMs);
+  type Session = { server: Server; transport: StreamableHTTPServerTransport; roots: Set<string>; touched: number; active: number; streams: number };
   const sessions = new Map<string, Session>();
+  let pendingSessions = 0;
+  let port = 0;
+  let shuttingDown = false;
   const authorization = Buffer.from(`Bearer ${opts.token}`);
   const schemas = TOOLS.map(tool => {
     const schema = tool.inputSchema as { properties?: object; required?: string[] };
@@ -59,14 +65,16 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
   const validators = new Map(schemas.map(tool => [tool.name, validator.getValidator(tool.inputSchema)]));
   const http = createServer(async (req, res) => {
     const reject = (status: number, message: string) => { res.writeHead(status, { 'Content-Type': 'text/plain' }); res.end(message); };
-    const port = (http.address() as { port: number }).port;
+    if (shuttingDown) return reject(503, 'MCP server is shutting down');
     if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host ?? '')) return reject(403, 'Invalid Host');
     if (req.headers.origin && ![`http://127.0.0.1:${port}`, `http://localhost:${port}`].includes(req.headers.origin)) return reject(403, 'Invalid Origin');
     const given = Buffer.from(req.headers.authorization ?? '');
     if (given.length !== authorization.length || !timingSafeEqual(given, authorization)) return reject(401, 'Unauthorized');
     if (req.url !== '/mcp') return reject(404, 'Not found');
     if (!['GET', 'POST', 'DELETE'].includes(req.method ?? '')) { res.setHeader('Allow', 'GET, POST, DELETE'); return reject(405, 'Method not allowed'); }
-    if (Number(req.headers['content-length'] ?? 0) > 1_048_576) return reject(413, 'Request body exceeds 1 MiB');
+    if (Number(req.headers['content-length'] ?? 0) > MCP_BODY_LIMIT_BYTES) return reject(413, 'Request body exceeds 1 MiB');
+    let reserved = false;
+    let provisional: Session | undefined;
     try {
       let body: unknown;
       if (req.method === 'POST') {
@@ -78,25 +86,29 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
       if (id && !session) return reject(404, 'Unknown session');
       if (!session) {
         if (req.method !== 'POST' || !isInitializeRequest(body)) return reject(400, 'Initialize a session first');
-        if (sessions.size >= 256) return reject(503, 'Too many sessions');
+        if (sessions.size + pendingSessions >= (opts.maxSessions ?? MCP_MAX_SESSIONS)) return reject(503, 'Too many sessions');
+        pendingSessions++;
+        reserved = true;
         const server = new Server({ name: 'graft', version: opts.version ?? '0' },
           { capabilities: { tools: {}, logging: {} }, instructions: mcpInstructions() });
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: randomUUID,
           onsessioninitialized: id => { sessions.set(id, session!); } });
-        session = { server, transport, roots: new Set(), touched: Date.now(), active: 0 };
+        session = { server, transport, roots: new Set(), touched: Date.now(), active: 0, streams: 0 };
+        provisional = session;
         const current = session;
         server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: schemas }));
         server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
           try {
-            const args = request.params.arguments ?? {};
+            const args = { ...request.params.arguments };
             const name = canonicalToolName(request.params.name);
+            if (name === 'graft_trace_calls' && args.symbol === undefined && args.file !== undefined) args.symbol = args.file;
             const schema = schemas.find(tool => tool.name === name);
             if (!schema) throw new Error(`Unknown tool: ${name}`);
             const validation = validators.get(name)!(args);
             if (!validation.valid) throw new Error(validation.errorMessage);
             const root = absoluteDirectory(args.project_root, 'project_root');
-            const contextDir = outputDirectory(args.context_dir ?? join(root, 'graft'));
-            if (current.roots.size >= 256 && !current.roots.has(root)) throw new Error('Too many repository subscriptions in this session');
+            const contextDir = outputDirectory(args.context_dir);
+            if (current.roots.size >= MCP_MAX_ROOTS_PER_SESSION && !current.roots.has(root)) throw new Error('Too many repository subscriptions in this session');
             current.roots.add(root);
             current.active++;
             let progress = 0;
@@ -119,27 +131,40 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
         await server.connect(transport);
       }
       session.touched = Date.now();
+      if (req.method === 'GET') {
+        const current = session;
+        current.streams++;
+        res.once('close', () => { current.streams--; current.touched = Date.now(); });
+      }
       await session.transport.handleRequest(req, res, body);
     } catch (error) {
       console.error('MCP request failed:', error instanceof Error ? error.message : String(error));
       if (!res.headersSent) reject(500, 'Internal server error'); else res.end();
+    } finally {
+      if (reserved) pendingSessions--;
+      if (provisional && !provisional.transport.sessionId) await provisional.server.close().catch(() => {});
     }
   });
-  http.requestTimeout = 30_000;
+  http.requestTimeout = MCP_REQUEST_TIMEOUT_MS;
   await new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(opts.port ?? DEFAULT_MCP_PORT, '127.0.0.1', resolve); });
+  port = (http.address() as { port: number }).port;
   const expiry = setInterval(() => {
-    for (const session of sessions.values()) if (!session.active && Date.now() - session.touched > 30 * 60_000) void session.server.close();
-  }, 60_000);
+    for (const session of sessions.values()) if (!session.active && !session.streams && Date.now() - session.touched > (opts.sessionIdleMs ?? MCP_SESSION_IDLE_MS)) void session.server.close().catch(() => {});
+  }, opts.sessionSweepMs ?? MCP_SESSION_SWEEP_MS);
   expiry.unref();
   let closing: Promise<void> | undefined;
-  return { url: `http://127.0.0.1:${(http.address() as { port: number }).port}/mcp`,
+  return { url: `http://127.0.0.1:${port}/mcp`,
     close: () => closing ??= (async () => {
+      shuttingDown = true;
       clearInterval(expiry);
       const stopped = new Promise<void>(resolve => http.close(() => resolve()));
-      await Promise.all([...sessions.values()].map(session => session.server.close()));
-      http.closeAllConnections();
-      await pool.close();
-      await stopped;
+      try {
+        await Promise.allSettled([...sessions.values()].map(session => session.server.close()));
+      } finally {
+        http.closeAllConnections();
+        await pool.close();
+        await stopped;
+      }
     })(),
   };
 }

@@ -55,7 +55,7 @@ function isConceptNodeFile(path: string): boolean {
 /** The card path for a source path: mirror the tree, swap the extension for .md.
  * Root-level sources share `graft/` with concept nodes. If that filename is
  * already a concept, park the file card under `_root/` instead of clobbering it. */
-function cardPathFor(outDir: string, sourcePath: string): string {
+export function cardPathFor(outDir: string, sourcePath: string): string {
   const md = sourcePath.replace(/\.[^./]+$/, "") + ".md";
   const primary = join(outDir, md);
   if (sourcePath.includes("/")) return primary;

@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import { mcpUrl } from '../mcp/config.js';
 import type { PlannedWrite } from './plan.js';
 import { readJsonObject, type ConfigWrite } from './config-write.js';
 
@@ -27,11 +28,12 @@ export interface McpTarget extends PlannedWrite {
   /** JSON only: top-level keys the host requires (applied as `??=` — a value
    *  the user already set is never overwritten). */
   defaults?: Record<string, unknown>;
+  retired?: boolean;
 }
 
 /** Loopback endpoint shared by every client; secrets remain in the client's environment. */
 export function serverEntry() {
-  return { type: 'http', url: process.env.GRAFT_MCP_URL || 'http://127.0.0.1:8421/mcp',
+  return { type: 'http', url: mcpUrl(),
     headers: { Authorization: 'Bearer ${GRAFT_MCP_TOKEN}' } };
 }
 
@@ -51,6 +53,10 @@ export function mergeJsonKey(
   entry: object,
   opts: { defaults?: Record<string, unknown> } = {},
 ): McpWrite {
+  if (!process.env.GRAFT_MCP_TOKEN?.trim()) {
+    console.error('graft: MCP setup skipped: start the daemon and export GRAFT_MCP_TOKEN, then run graft init.');
+    return { id, path, action: 'skipped' };
+  }
   const loaded = readJsonObject(path);
   if (loaded === 'unparseable') return { id, path, action: 'skipped-unparseable' };
   const { root, existed } = loaded;
@@ -107,6 +113,10 @@ export function stripTomlSection(text: string): { rest: string; found: boolean }
  * tables are untouched either way.
  */
 function upsertCodexToml(id: string, path: string): McpWrite {
+  if (!process.env.GRAFT_MCP_TOKEN?.trim()) {
+    console.error('graft: MCP setup skipped: start the daemon and export GRAFT_MCP_TOKEN, then run graft init.');
+    return { id, path, action: 'skipped' };
+  }
   const existed = existsSync(path);
   const text = existed ? readFileSync(path, 'utf8') : '';
   const section = `${TOML_HEADER}\nurl = ${JSON.stringify(serverEntry().url)}\nbearer_token_env_var = "GRAFT_MCP_TOKEN"\n`;
@@ -147,7 +157,7 @@ function jsonTarget(
 export function mcpTargets(
   repo: string,
   ids: string[],
-  opts: { home?: string } = {},
+  opts: { home?: string; includeRetired?: boolean } = {},
 ): McpTarget[] {
   const home = opts.home ?? homedir();
   const entry = serverEntry();
@@ -164,8 +174,13 @@ export function mcpTargets(
         out.push(jsonTarget(id, id, join(repo, '.kiro', 'settings', 'mcp.json'), 'mcpServers', { url: entry.url, headers: entry.headers }));
         break;
       case 'antigravity':
+        if (opts.includeRetired) out.push({ ...jsonTarget(id, id, join(home, '.gemini', 'config', 'mcp_config.json'), 'mcpServers', {}, 'global'), retired: true });
+        break;
       case 'muse':
+        if (opts.includeRetired) out.push({ ...jsonTarget(id, id, join(home, '.config', 'muse', 'settings.json'), 'mcpServers', {}, 'global'), retired: true });
+        break;
       case 'grok':
+        if (opts.includeRetired) out.push({ hostId: id, id, path: join(repo, '.grok', 'config.toml'), scope: 'repo', kind: 'mcp', what: '[mcp_servers.graft]', format: 'toml', retired: true });
         break; // No verified authenticated Streamable HTTP configuration for these hosts.
       case 'agents':
         // Guarded on the CLI actually being installed, so a plan only ever
@@ -196,8 +211,9 @@ export function registerMcpConfigs(
   ids: string[],
   opts: { home?: string; global?: boolean } = {},
 ): McpWrite[] {
-  for (const id of ids) if (['antigravity', 'muse', 'grok'].includes(id))
-    console.error(`graft: ${id} MCP registration skipped: authenticated Streamable HTTP support is unverified; use the graft CLI.`);
+  const retired = mcpTargets(repo, ids, { ...opts, includeRetired: true }).filter(target => target.retired).map(target => target.hostId);
+  for (const id of retired) console.error(`graft: ${id} MCP registration skipped: authenticated Streamable HTTP support is unverified; use the graft CLI.`);
+  retireLegacyMcpConfigs(repo, process.env.GRAFT_MCP_TOKEN?.trim() ? retired : ids, opts);
   return mcpTargets(repo, ids, opts)
     .filter((t) => opts.global !== false || t.scope !== 'global')
     .map((t) =>
@@ -205,4 +221,37 @@ export function registerMcpConfigs(
         ? upsertCodexToml(t.id, t.path)
         : mergeJsonKey(t.id, t.path, t.topKey!, t.entry!, { defaults: t.defaults }),
     );
+}
+
+/** Remove obsolete graft launch commands; keep HTTP registrations and other servers. */
+export function retireLegacyMcpConfigs(repo: string, ids: string[], opts: { home?: string; global?: boolean } = {}): void {
+  const targets = mcpTargets(repo, ids, { ...opts, includeRetired: true });
+  if (ids.includes('claude')) {
+    targets.push(jsonTarget('claude', 'claude', join(repo, '.mcp.json'), 'mcpServers', {}));
+    targets.push(jsonTarget('claude', 'claude-global', join(opts.home ?? homedir(), '.claude.json'), 'mcpServers', {}, 'global'));
+  }
+  for (const target of targets) {
+    if (opts.global === false && target.scope === 'global') continue;
+    if (!existsSync(target.path)) continue;
+    let changed = false;
+    if (target.format === 'json') {
+      const loaded = readJsonObject(target.path);
+      if (loaded === 'unparseable') continue;
+      const bucket = loaded.root[target.topKey!];
+      const entry = bucket?.graft;
+      if (entry && typeof entry.command === 'string' && /(?:^|[/\\])(?:graft|npx)(?:\.cmd)?$/.test(entry.command) && Array.isArray(entry.args) && entry.args.includes('mcp')) {
+        delete bucket.graft;
+        writeFileSync(target.path, `${JSON.stringify(loaded.root, null, 2)}\n`);
+        changed = true;
+      }
+    } else {
+      const original = readFileSync(target.path, 'utf8');
+      const section = original.match(/\[mcp_servers\.graft\]([^]*?)(?=\n\[|$)/)?.[1];
+      if (section && /command\s*=\s*"(?:[^"\n]*\/)?(?:graft|npx)"/.test(section) && /"mcp"/.test(section)) {
+        writeFileSync(target.path, stripTomlSection(original).rest);
+        changed = true;
+      }
+    }
+    if (changed) console.error(`graft: removed obsolete stdio registration from ${target.path}; start the daemon and export GRAFT_MCP_TOKEN, then run graft init. CLI tools remain available.`);
+  }
 }

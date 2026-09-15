@@ -1,13 +1,17 @@
 import { callTool } from './tools.js';
+import { runUpkeep } from '../upkeep-run.js';
+import { runningVersion } from '../upkeep.js';
+import { MCP_PROGRESS_INTERVAL_MS } from './config.js';
 import { track } from '../telemetry/index.js';
 
 process.on('message', async (job: { root: string; name: string; args: Record<string, unknown>; contextDir?: string }) => {
   try {
+    for (const line of runUpkeep(job.root, runningVersion()).lines) console.error(line);
     let lastProgress = 0;
     const result = await callTool(job.root, job.name, job.args, job.contextDir,
       (event) => {
         if (event.status === 'progress') {
-          if (Date.now() - lastProgress < 100) return;
+          if (Date.now() - lastProgress < MCP_PROGRESS_INTERVAL_MS) return;
           lastProgress = Date.now();
         }
         process.send?.({ event });

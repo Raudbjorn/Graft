@@ -11,6 +11,9 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { startMcpServer } from '../src/mcp/server.js';
 import { acquireLockIn, releaseLockIn } from '../src/util/state.js';
+import { readStamp, writeStamp, runningVersion } from '../src/upkeep.js';
+import { isTrackedCommand } from '../src/telemetry/contract.js';
+import { buildGraph } from '../src/graph/build.js';
 import { ToolPool } from '../src/mcp/pool.js';
 
 const token = 'test-token-only';
@@ -42,7 +45,8 @@ test('HTTP discovery, explicit builds, shared builds, scoped SSE notifications a
   assert.equal(list.tools.length, 7);
   for (const tool of list.tools) assert.ok(tool.inputSchema.required?.includes('project_root'));
   assert.match(a.client.getInstructions()!, /project_root/);
-  assert.ok(a.client.getInstructions()!.length < 1100);
+  // Keep the recovery instruction within the original <1000-character host budget.
+  assert.ok(a.client.getInstructions()!.length < 1000);
   for (const tool of list.tools) assert.ok(a.client.getInstructions()!.includes(tool.name));
   const missing = await a.client.callTool({ name: 'graft_repo_map', arguments: { project_root: root } });
   assert.equal(missing.isError, true);
@@ -138,6 +142,8 @@ test('workspace builds keep child graphs separate and preserve custom output fil
   }
   const out = join(root, 'output');
   mkdirSync(out);
+  await buildGraph(root, { contextDir: out });
+  assert.ok(existsSync(join(out, '.graph', 'wiring.json')));
   writeFileSync(join(out, 'keep.txt'), 'user data');
   const server = await startMcpServer({ port: 0, token });
   const { client, transport } = await connect(server.url);
@@ -147,6 +153,8 @@ test('workspace builds keep child graphs separate and preserve custom output fil
   const built = JSON.parse(text(result));
   assert.equal(built.children.length, 2);
   for (const child of built.children) assert.ok(existsSync(child.graph_path));
+  assert.equal(existsSync(join(out, '.graph', 'wiring.json')), false, 'remove the obsolete parent graph');
+  assert.equal(existsSync(join(out, 'one', 'index.md')), false, 'remove the obsolete parent cards');
   assert.ok(existsSync(join(out, 'keep.txt')), 'workspace build must not delete unrelated files');
   assert.ok(existsSync(built.graph_path));
   const query = await client.callTool({ name: 'graft_find_all', arguments: { project_root: root, context_dir: out, pattern: 'function' } });
@@ -167,4 +175,87 @@ test('a worker killed while holding a build lock leaves no stale lock', { timeou
   await assert.rejects(result, /worker exited/);
   assert.equal(existsSync(join(root, 'graft', '.cache', '.sync.lock')), false);
   assert.equal((await pool.run(root, 'graft_build', {}, undefined, () => {})).isError, false);
+});
+
+test('HTTP seeds a new worktree and accepts the legacy trace file argument', { timeout: 20_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-http-seed-'));
+  const main = join(root, 'main'), wt = join(root, 'worktree');
+  mkdirSync(main); mkdirSync(wt);
+  const gitdir = join(main, '.git', 'worktrees', 'test');
+  mkdirSync(gitdir, { recursive: true });
+  writeFileSync(join(gitdir, 'commondir'), '../..\n');
+  writeFileSync(join(wt, '.git'), `gitdir: ${gitdir}\n`);
+  for (const dir of [main, wt]) writeFileSync(join(dir, 'index.ts'), 'export function seeded() { return 1; }\n');
+  const server = await startMcpServer({ port: 0, token });
+  const { client, transport } = await connect(server.url);
+  t.after(async () => { await transport.terminateSession(); await client.close(); await server.close(); rmSync(root, { recursive: true, force: true }); });
+  assert.equal((await client.callTool({ name: 'graft_build', arguments: { project_root: main } })).isError, false);
+  const query = await client.callTool({ name: 'graft_find_all', arguments: { project_root: wt, pattern: 'seeded' } });
+  assert.equal(query.isError, false, text(query));
+  assert.match(text(query), /seeded/);
+  assert.ok(existsSync(join(wt, 'graft', '.graph', 'wiring.json')));
+  const trace = await client.callTool({ name: 'graft_trace_calls', arguments: { project_root: wt, file: 'index.ts' } });
+  assert.doesNotMatch(text(trace), /required property|symbol.*required/);
+  rmSync(join(wt, 'graft'), { recursive: true });
+  const build = await client.callTool({ name: 'graft_build', arguments: { project_root: wt } });
+  assert.equal(build.isError, false, text(build));
+  assert.equal(JSON.parse(text(build)).parsed, 0, 'explicit builds also reuse the parent graph');
+});
+
+test('worker deadline releases capacity without removing a foreign build lock', { timeout: 15_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-http-timeout-'));
+  const cache = join(root, 'graft', '.cache');
+  const pool = new ToolPool(1, 100, 1500);
+  t.after(async () => { await pool.close(); rmSync(root, { recursive: true, force: true }); });
+  assert.ok(acquireLockIn(cache));
+  await assert.rejects(pool.run(root, 'graft_build', {}, undefined, () => {}), /exceeded/);
+  await delay(100);
+  assert.ok(existsSync(join(cache, '.sync.lock')), 'the lock belongs to the test process');
+  releaseLockIn(cache);
+  assert.equal((await pool.run(root, 'graft_repo_map', {}, undefined, () => {})).isError, true);
+});
+
+test('an open SSE stream survives session idle expiry and retains subscriptions', { timeout: 15_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-http-idle-'));
+  writeFileSync(join(root, 'index.ts'), 'export const alive = 1;\n');
+  const server = await startMcpServer({ port: 0, token, sessionIdleMs: 100, sessionSweepMs: 20 });
+  const a = await connect(server.url), b = await connect(server.url);
+  t.after(async () => { await Promise.all([a, b].map(async x => { await x.client.close(); })); await server.close(); rmSync(root, { recursive: true, force: true }); });
+  await a.client.callTool({ name: 'graft_repo_map', arguments: { project_root: root } });
+  await delay(300);
+  await a.client.ping();
+  assert.equal((await b.client.callTool({ name: 'graft_build', arguments: { project_root: root } })).isError, false);
+  await delay(50);
+  assert.equal(a.events.filter(e => e.status === 'completed').length, 1);
+});
+
+test('concurrent initialization respects the session admission limit', async t => {
+  const server = await startMcpServer({ port: 0, token, maxSessions: 2 });
+  t.after(() => server.close());
+  const attempts = await Promise.allSettled(Array.from({ length: 8 }, () => connect(server.url)));
+  const connected = attempts.filter(x => x.status === 'fulfilled');
+  assert.equal(connected.length, 2);
+  for (const result of connected) if (result.status === 'fulfilled') await result.value.client.close();
+});
+
+
+test('hookless clients get upkeep through the worker and builds are tracked', { timeout: 15_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-http-upkeep-'));
+  writeStamp(root, '0.0.1', ['gemini'], { global: false });
+  const server = await startMcpServer({ port: 0, token });
+  const { client } = await connect(server.url);
+  t.after(async () => { await client.close(); await server.close(); rmSync(root, { recursive: true, force: true }); });
+  await client.callTool({ name: 'graft_repo_map', arguments: { project_root: root } });
+  assert.equal(readStamp(root)?.version, runningVersion());
+  assert.ok(existsSync(join(root, 'GEMINI.md')));
+  assert.equal(existsSync(join(root, '.gemini', 'settings.json')), false, 'upkeep must not register HTTP');
+  assert.ok(isTrackedCommand('build'));
+});
+
+test('shutdown tolerates concurrent keep-alive requests', { timeout: 5000 }, async () => {
+  const server = await startMcpServer({ port: 0, token });
+  await fetch(server.url, { headers });
+  const requests = Array.from({ length: 20 }, () => fetch(server.url, { headers }));
+  await Promise.allSettled([...requests, server.close()]);
+  await server.close();
 });

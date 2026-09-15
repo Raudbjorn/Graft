@@ -10,6 +10,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, statSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  MAX_CACHE_ENTRIES,
   loadGraphCached,
   loadAskIndexCached,
   __parseCount,
@@ -154,4 +155,17 @@ test("callTool: graft_trace_calls on the same dir twice doesn't reparse the grap
   const r2 = await callTool(dir, "graft_trace_calls", { symbol: "src/math.ts", depth: 2 });
   assert.equal(r2.isError, false);
   assert.equal(__parseCount.graph, 1, "second call on the same dir must not reparse");
+});
+
+test('long-lived graph cache evicts the least recently used repository', () => {
+  const dirs = Array.from({ length: MAX_CACHE_ENTRIES + 1 }, () => fixtureDir());
+  for (const dir of dirs) writeGraph({ version: 1, nodes: [node('bounded')], edges: [] } as GraphV1, dir);
+  for (const dir of dirs.slice(0, MAX_CACHE_ENTRIES)) loadGraphCached(dir);
+  const recent = loadGraphCached(dirs[0]);
+  loadGraphCached(dirs[MAX_CACHE_ENTRIES]);
+  __resetParseCounts();
+  assert.strictEqual(loadGraphCached(dirs[0]), recent);
+  assert.equal(__parseCount.graph, 0);
+  loadGraphCached(dirs[1]);
+  assert.equal(__parseCount.graph, 1, 'oldest untouched entry must be reparsed');
 });

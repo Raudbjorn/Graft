@@ -70,15 +70,23 @@ systemctl --user disable --now graft-mcp
 ```
 
 The daemon listens only on `127.0.0.1:8421`. To change the port, use a systemd
-`ExecStart` override with `graft mcp --port PORT`, then set `GRAFT_MCP_URL` before
-regenerating host configurations. The token is required on every HTTP request.
+override (`systemctl --user edit graft-mcp`), clearing the old command first:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/graft mcp --port 9000
+```
+
+Then set `GRAFT_MCP_URL=http://127.0.0.1:9000/mcp` before explicitly
+regenerating host configurations. Only HTTP loopback URLs are accepted. The token is required on every HTTP request.
 All authenticated clients have the filesystem access of the service user.
 
 At most four reusable worker processes run tools. Calls for one repository/output
 are serialized, identical in-flight builds are shared, and excess work queues.
-Workers exit after 60 seconds idle. Four occupied workers can delay another
+Workers exit after 60 seconds idle. Jobs have a two-minute deadline including queue time; a stuck worker is killed and its slot replaced. Four occupied workers can delay another
 repository's query; the HTTP listener stays responsive. Sessions expire after
-30 minutes without requests or active work. Reconnect to start a new session.
+30 minutes without requests, active work, or an open SSE stream. Reconnect to start a new session.
 
 Removing stdio is a breaking change: update old `command`/`args` registrations.
 Stopping the service leaves CLI tools usable and graph files intact. To roll
@@ -87,3 +95,14 @@ back to an older stdio release, reinstall it and rerun that release's host setup
 References: [MCP SDK](https://ts.sdk.modelcontextprotocol.io/server),
 [Claude Code](https://code.claude.com/docs/en/mcp),
 [Arch VCS packaging](https://wiki.archlinux.org/title/VCS_package_guidelines).
+
+### Upgrading from stdio or installing through npm
+
+Upkeep refreshes hooks and skills, but does not opt clients into HTTP or replace
+existing HTTP credentials. Old graft stdio registrations are removed with a
+setup message. Start `graft mcp` with `GRAFT_MCP_TOKEN` set, export the same token
+in the environment that starts your MCP client, then run `graft init` explicitly.
+Registration is skipped if the token is absent. For Arch, `graft-mcp-setup`
+creates the token and starts the user service; follow its environment instructions.
+A token in the service environment does not set it in an already-running editor.
+The source checkout does not ship an enabled MCP registration.

@@ -438,23 +438,12 @@ function targets(repo: string, opts: RetractOpts): Target[] {
   // 2. MCP registrations. Asking for every host id at once yields the union of
   //    config files, each already carrying its format and top-level key.
   const allIds = HOSTS.map((h) => h.id).filter((id) => !exclude.has(id));
-  for (const t of mcpTargets(repo, allIds, { home })) {
+  for (const t of mcpTargets(repo, allIds, { home, includeRetired: true })) {
     if (opts.global === false && t.scope === 'global') continue;
     add({
       hostId: t.hostId, path: t.path, what: t.what, scope: t.scope,
       run: (a) => (t.format === 'toml' ? removeTomlSection(t.path, a) : removeJsonKey(t.path, t.topKey!, a)),
     });
-  }
-
-  // Retraction must still remove registrations created by older stdio releases.
-  for (const [hostId, path, global] of [
-    ['grok', join(repo, '.grok', 'config.toml'), false],
-    ['muse', join(home, '.config', 'muse', 'settings.json'), true],
-    ['antigravity', join(home, '.gemini', 'config', 'mcp_config.json'), true],
-  ] as const) {
-    if (exclude.has(hostId) || (global && opts.global === false)) continue;
-    add({ hostId, path, what: 'legacy stdio MCP registration', scope: global ? 'global' : 'repo',
-      run: a => path.endsWith('.toml') ? removeTomlSection(path, a) : removeJsonKey(path, 'mcpServers', a) });
   }
 
   // 2b. The project-agents skill — a repo-local write outside the host's own

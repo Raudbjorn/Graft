@@ -4,6 +4,7 @@
  * map, init. Git is the sync: commit graft/ and a clone has the graph. A
  * workspace parent (≥2 git children) federates query commands across children.
  */
+import { DEFAULT_MCP_PORT } from './mcp/config.js';
 import "dotenv/config";
 import { Command } from "commander";
 import { join, relative, resolve } from "node:path";
@@ -785,7 +786,7 @@ program
 program
   .command("mcp")
   .description("Serve local repositories over MCP Streamable HTTP with SSE notifications")
-  .option("--port <port>", "loopback HTTP port", "8421")
+  .option("--port <port>", "loopback HTTP port", String(DEFAULT_MCP_PORT))
   .action(async (opts: { port: string }) => {
     const port = Number(opts.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("port must be 1–65535");

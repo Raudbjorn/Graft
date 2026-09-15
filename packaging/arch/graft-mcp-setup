@@ -16,5 +16,5 @@ chmodSync(file, 0o600);
 JS
 systemctl --user daemon-reload
 systemctl --user enable --now graft-mcp.service
-printf 'Graft MCP is enabled at http://127.0.0.1:8421/mcp\n'
+printf 'Graft MCP is enabled. Its address is recorded in the service journal.\n'
 printf 'Before starting your MCP client, run: set -a; source %q; set +a\n' "$config_dir/mcp.env"

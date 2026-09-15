@@ -9,7 +9,6 @@ Restart=on-failure
 RestartSec=3
 TimeoutStopSec=10
 KillMode=mixed
-UMask=0077
 NoNewPrivileges=yes
 
 [Install]

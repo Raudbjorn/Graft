@@ -26,7 +26,7 @@ export function emptyStats(): Stats {
     staleCount: 0, dirty: false, syncing: false, syncedAt: null, lastFile: null };
 }
 
-const LOCK_FILE = '.sync.lock';
+export const LOCK_FILE = '.sync.lock';
 
 /**
  * Where the pieces this module manages (the stats cache, the sync lock,

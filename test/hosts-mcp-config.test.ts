@@ -1,3 +1,5 @@
+// Explicit daemon registration tests opt in with a non-secret test token.
+process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -104,4 +106,49 @@ test('HTTP entry keeps secrets out of configuration and supports a custom URL', 
   } finally {
     if (saved === undefined) delete process.env.GRAFT_MCP_URL; else process.env.GRAFT_MCP_URL = saved;
   }
+});
+
+test('registration without a token retires stdio but does not overwrite HTTP credentials', () => {
+  const repo = fresh(), home = fresh();
+  const saved = process.env.GRAFT_MCP_TOKEN;
+  delete process.env.GRAFT_MCP_TOKEN;
+  try {
+    mkdirSync(join(repo, '.cursor'));
+    const path = join(repo, '.cursor', 'mcp.json');
+    const existing = { mcpServers: { graft: { url: 'http://localhost:9000/mcp', headers: { Authorization: 'custom' } }, foreign: {} } };
+    writeFileSync(path, JSON.stringify(existing));
+    assert.equal(registerMcpConfigs(repo, ['cursor'], { home })[0].action, 'skipped');
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), existing);
+    existing.mcpServers.graft = { command: 'graft', args: ['mcp'] } as any;
+    writeFileSync(path, JSON.stringify(existing));
+    registerMcpConfigs(repo, ['cursor'], { home });
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { mcpServers: { foreign: {} } });
+    registerMcpConfigs(repo, ['gemini'], { home });
+    assert.equal(existsSync(join(repo, '.gemini', 'settings.json')), false);
+  } finally { if (saved !== undefined) process.env.GRAFT_MCP_TOKEN = saved; }
+});
+
+test('selected unsupported hosts lose legacy stdio entries and keep foreign entries', () => {
+  const repo = fresh(), home = fresh();
+  const paths = [join(home, '.config', 'muse', 'settings.json'), join(home, '.gemini', 'config', 'mcp_config.json')];
+  for (const path of paths) {
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, JSON.stringify({ mcpServers: { graft: { command: 'graft', args: ['mcp'] }, foreign: {} } }));
+  }
+  mkdirSync(join(repo, '.grok'));
+  writeFileSync(join(repo, '.grok', 'config.toml'), '[mcp_servers.graft]\ncommand = "graft"\nargs = ["mcp"]\n\n[mcp_servers.foreign]\ncommand = "other"\n');
+  registerMcpConfigs(repo, ['muse', 'antigravity', 'grok'], { home });
+  for (const path of paths) assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { mcpServers: { foreign: {} } });
+  assert.doesNotMatch(readFileSync(join(repo, '.grok', 'config.toml'), 'utf8'), /mcp_servers.graft/);
+  assert.match(readFileSync(join(repo, '.grok', 'config.toml'), 'utf8'), /mcp_servers.foreign/);
+});
+
+test('daemon URL rejects remote origins and credential-bearing URLs', () => {
+  const saved = process.env.GRAFT_MCP_URL;
+  try {
+    for (const url of ['https://evil.example/mcp', 'http://evil.example/mcp', 'http://user:secret@localhost/mcp', 'http://localhost/mcp?token=x', 'http://localhost/mcp#x']) {
+      process.env.GRAFT_MCP_URL = url;
+      assert.throws(serverEntry, /loopback/);
+    }
+  } finally { if (saved === undefined) delete process.env.GRAFT_MCP_URL; else process.env.GRAFT_MCP_URL = saved; }
 });

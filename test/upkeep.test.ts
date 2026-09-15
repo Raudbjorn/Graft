@@ -20,6 +20,7 @@ import {
   writeStamp,
   type WiringOpts,
 } from '../src/upkeep.js';
+import { runUpkeep } from '../src/upkeep-run.js';
 import { tmpRepo } from './helpers.js';
 
 test('compareVersions orders releases numerically, not lexically', () => {
@@ -237,4 +238,19 @@ test('formatWiringRefresh discloses machine-wide writes', () => {
   const local = formatWiringRefresh({ from: '0.7.0', to: '0.11.0', hosts: ['agents'], global: false });
   assert.ok(local);
   assert.doesNotMatch(local, /~\/\.codex/);
+});
+
+
+test('upgrade upkeep preserves HTTP auth and never silently registers HTTP', () => {
+  const repo = tmpRepo('upkeep-http'), home = tmpRepo('upkeep-http-home');
+  const config = join(repo, '.mcp.json');
+  const http = JSON.stringify({ mcpServers: { graft: { type: 'http', url: 'http://localhost:9000/mcp', headers: { Authorization: 'custom' } } } });
+  writeFileSync(config, http);
+  writeStamp(repo, '0.0.1', ['claude'], { global: false });
+  runUpkeep(repo, '99.0.0', { background: false, home });
+  assert.equal(readFileSync(config, 'utf8'), http);
+  writeFileSync(config, JSON.stringify({ mcpServers: { graft: { command: 'graft', args: ['mcp'] }, foreign: {} } }));
+  writeStamp(repo, '0.0.1', ['claude'], { global: false });
+  runUpkeep(repo, '99.0.0', { background: false, home });
+  assert.deepEqual(JSON.parse(readFileSync(config, 'utf8')), { mcpServers: { foreign: {} } });
 });

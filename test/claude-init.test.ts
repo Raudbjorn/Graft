@@ -1,3 +1,5 @@
+// Explicit daemon registration tests opt in with a non-secret test token.
+process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
