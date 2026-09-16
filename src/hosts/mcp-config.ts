@@ -203,55 +203,20 @@ export function registerMcpConfigs(
   ids: string[],
   opts: { home?: string; global?: boolean } = {},
 ): McpWrite[] {
-  const retired = mcpTargets(repo, ids, { ...opts, includeRetired: true }).filter(target => target.retired).map(target => target.hostId);
-  for (const id of retired) console.error(`graft: ${id} MCP registration skipped: authenticated Streamable HTTP support is unverified; use the graft CLI.`);
   const reason = mcpSetupReason();
-  retireLegacyMcpConfigs(repo, reason ? ids : retired, opts);
-  if (reason) return mcpTargets(repo, ids, opts)
-    .filter(t => opts.global !== false || t.scope !== 'global')
-    .map(t => ({ id: t.id, path: t.path, action: 'skipped', reason }));
-  return mcpTargets(repo, ids, { ...opts, url: mcpUrl() })
-    .filter((t) => opts.global !== false || t.scope !== 'global')
-    .map((t) =>
-      t.format === 'toml'
-        ? upsertCodexToml(t.id, t.path)
-        : mergeJsonKey(t.id, t.path, t.topKey!, t.entry!, { defaults: t.defaults }),
-    );
-}
-
-/** Remove obsolete graft launch commands; keep HTTP registrations and other servers. */
-export function retireLegacyMcpConfigs(repo: string, ids: string[], opts: { home?: string; global?: boolean } = {}): void {
-  const targets = mcpTargets(repo, ids, { ...opts, includeRetired: true });
-  if (ids.includes('claude')) {
-    targets.push(jsonTarget('claude', 'claude', join(repo, '.mcp.json'), 'mcpServers', {}));
-    targets.push(jsonTarget('claude', 'claude-global', join(opts.home ?? homedir(), '.claude.json'), 'mcpServers', {}, 'global'));
-  }
-  for (const target of targets) {
-    if (opts.global === false && target.scope === 'global') continue;
-    if (!existsSync(target.path)) continue;
-    let changed = false;
-    if (target.format === 'json') {
-      const loaded = readJsonObject(target.path);
-      if (loaded === 'unparseable') continue;
-      const bucket = loaded.root[target.topKey!];
-      const entry = bucket?.graft;
-      const command = Array.isArray(entry?.command) ? entry.command[0] : entry?.command;
-      const args = Array.isArray(entry?.command) ? entry.command.slice(1) : entry?.args;
-      if (typeof command === 'string' && /(?:^|[/\\])(?:graft|npx)(?:\.cmd)?$/.test(command) && Array.isArray(args) && args.includes('mcp')) {
-        delete bucket.graft;
-        writeFileSync(target.path, `${JSON.stringify(loaded.root, null, 2)}\n`);
-        changed = true;
-      }
-    } else {
-      const original = readFileSync(target.path, 'utf8');
-      const section = original.match(/\[mcp_servers\.graft\]([^]*?)(?=\n\[|$)/)?.[1];
-      if (section && /command\s*=\s*"(?:[^"\n]*\/)?(?:graft|npx)"/.test(section) && /"mcp"/.test(section)) {
-        writeFileSync(target.path, stripTomlSection(original).rest);
-        changed = true;
-      }
-    }
-    if (changed) console.error(`graft: removed obsolete stdio registration from ${target.path}; start the daemon and export GRAFT_MCP_TOKEN, then run graft init. CLI tools remain available.`);
-  }
+  // Planning is pure; validate the configured URL only when writing a supported target.
+  const targets = mcpTargets(repo, ids, { ...opts, includeRetired: true })
+    .filter(t => opts.global !== false || t.scope !== 'global');
+  const entries = !reason && targets.some(t => !t.retired)
+    ? mcpTargets(repo, ids, { ...opts, url: mcpUrl() }) : [];
+  return targets.map(t => {
+    if (t.retired) return { id: t.id, path: t.path, action: 'skipped',
+      reason: 'authenticated HTTP support is unverified; existing registration preserved; use graft CLI' };
+    if (reason) return { id: t.id, path: t.path, action: 'skipped', reason };
+    const entry = entries.find(entry => entry.id === t.id && entry.path === t.path)!;
+    return t.format === 'toml' ? upsertCodexToml(t.id, t.path)
+      : mergeJsonKey(t.id, t.path, t.topKey!, entry.entry!, { defaults: t.defaults });
+  });
 }
 
 export function mcpSetupReason(): string | undefined {

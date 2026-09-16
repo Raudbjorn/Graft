@@ -1,4 +1,5 @@
 import { MCP_BUILD_LOCK_WAIT_MS, MCP_BUILD_LOCK_POLL_MS } from './config.js';
+import { validateOutputDirectory } from './paths.js';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildGraph } from '../graph/build.js';
@@ -19,24 +20,26 @@ export interface BuildEvent {
 }
 export type BuildListener = (event: BuildEvent) => void;
 
-export async function buildForMcp(root: string, contextDir?: string, onBuild?: BuildListener): Promise<Record<string, unknown>> {
-  const out = contextDirFor(root, contextDir);
+export async function buildForMcp(root: string, contextDir?: string, onBuild?: BuildListener, workspaceRoot = root): Promise<Record<string, unknown>> {
+  const out = validateOutputDirectory(workspaceRoot, contextDirFor(root, contextDir));
   const event = (status: BuildEvent['status'], extra: Partial<BuildEvent> = {}) =>
     onBuild?.({ project_root: root, context_dir: out, status, ...extra });
   const cache = join(out, CACHE_DIR);
-  const deadline = Date.now() + MCP_BUILD_LOCK_WAIT_MS;
-  while (!acquireLockIn(cache)) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for the graph build lock');
-    event('progress', { message: 'Waiting for another graph builder' });
-    await delay(MCP_BUILD_LOCK_POLL_MS);
-  }
-  const unhook = releaseOnSignal(cache);
-  event('started');
+  let locked = false;
+  let unhook: (() => void) | undefined;
   try {
+    const deadline = Date.now() + MCP_BUILD_LOCK_WAIT_MS;
+    while (!(locked = acquireLockIn(cache))) {
+      if (Date.now() >= deadline) throw new Error('Timed out waiting for the graph build lock');
+      event('progress', { message: 'Waiting for another graph builder' });
+      await delay(MCP_BUILD_LOCK_POLL_MS);
+    }
+    unhook = releaseOnSignal(cache);
+    event('started');
     if (isWorkspaceBuildRoot(root, contextDir)) {
       const results: Record<string, unknown>[] = [];
       const { children, migrated } = await splitWorkspace(root, contextDir,
-        async child => { results.push(await buildForMcp(child, undefined, onBuild)); },
+        async child => { results.push(await buildForMcp(child, undefined, onBuild, workspaceRoot)); },
         ({ children, migrated }) => { if (migrated) event('progress', { message: migrationNote(children) }); }, true);
       invalidateGraphCaches(out);
       const graph_path = workspacePath(root, contextDir);
@@ -57,7 +60,7 @@ export async function buildForMcp(root: string, contextDir?: string, onBuild?: B
     event('failed', { message: String(error) });
     throw error;
   } finally {
-    unhook();
-    releaseLockIn(cache);
+    unhook?.();
+    if (locked) releaseLockIn(cache);
   }
 }

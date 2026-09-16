@@ -1,3 +1,5 @@
+// This test compares actual registration writes with the plan.
+process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync } from 'node:fs';
@@ -115,7 +117,7 @@ test('every path a real runHostsInit writes was in the plan, and vice versa', ()
   const r = runHostsInit(repo, { home, agents: ids });
   const actual = new Set([
     ...r.written.map((w) => w.path),
-    ...r.mcp.map((m) => m.path),
+    ...r.mcp.filter(m => m.action !== 'skipped').map((m) => m.path),
     ...r.hooks.map((h) => h.path),
   ]);
 

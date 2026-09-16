@@ -196,4 +196,6 @@ test('byte budget retains an oversized active graph and two 40 MiB graphs', t =>
   assert.strictEqual(loadGraphCached(dirs[1]), a);
   assert.strictEqual(loadGraphCached(dirs[2]), b);
   assert.equal(__parseCount.graph, 0);
+  assert.notStrictEqual(loadGraphCached(dirs[0]), large);
+  assert.equal(__parseCount.graph, 1, 'an oversized entry is retained only while active, not permanently');
 });

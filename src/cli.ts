@@ -796,7 +796,7 @@ program
     const server = await startMcpServer({ port, token: process.env.GRAFT_MCP_TOKEN ?? '', version: currentVersion });
     console.error(`graft MCP → ${server.url}`);
     for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
-      void server.close().then(() => process.exit(0));
+      void server.close().then(() => process.exit(0)).catch(error => { console.error('MCP shutdown failed:', error); process.exit(1); });
     });
   });
 

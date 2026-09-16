@@ -37,7 +37,7 @@ build() {
 
 check() {
   cd "$srcdir/$_source_dir"
-  GRAFT_TELEMETRY=0 node --import tsx --test test/mcp-server.test.ts
+  GRAFT_TELEMETRY=0 node --import tsx --test test/mcp-server.test.ts test/mcp-lifecycle.test.ts
 }
 
 package() {

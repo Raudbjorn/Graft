@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/graft"
+# Match systemd's %h, independent of shell/manager XDG_CONFIG_HOME overrides.
+config_dir="$(node -p 'require("node:os").userInfo().homedir + "/.config/graft"')"
 install -d -m 700 "$config_dir"
 node --input-type=module - "$config_dir/mcp.env" <<'JS'
 import { existsSync, lstatSync, writeFileSync, chmodSync } from 'node:fs';

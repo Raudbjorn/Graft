@@ -52,7 +52,7 @@ test("runHostsInit --agents antigravity writes AGENTS.md + skill and skips HTTP 
   const r = runHostsInit(repo, { agents: ['antigravity'], home });
   assert.deepEqual(r.written.map((w) => w.id), ['antigravity']);
   assert.ok(readFileSync(join(repo, 'AGENTS.md'), 'utf8').includes('graft ask'), 'AGENTS.md written');
-  assert.deepEqual(r.mcp, [], 'unverified HTTP registration skipped');
+  assert.deepEqual(r.mcp.map(m => m.action), ['skipped'], 'unverified HTTP registration reported');
   assert.ok(r.hooks.some((w) => w.path.endsWith(join('skills', 'graft', 'SKILL.md'))), 'skill placed');
   // --no-global suppresses the two global writes (MCP + skill), keeps AGENTS.md
   const noGlobal = runHostsInit(fresh(), { agents: ['antigravity'], home: fresh(), global: false });

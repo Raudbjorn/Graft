@@ -1,8 +1,8 @@
 import { fork, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { CACHE_DIR, contextDirFor } from '../context/node-file.js';
-import { LOCK_FILE } from '../util/state.js';
+import { processIdentity, releaseOwnedLock } from '../util/state.js';
 import { MCP_WORKERS, MCP_WORKER_IDLE_MS, jobTimeoutMs as configuredJobTimeoutMs, MCP_MAX_QUEUED_JOBS, MCP_MAX_BUILD_WAITERS, MCP_SHUTDOWN_GRACE_MS } from './config.js';
 import { fileURLToPath } from 'node:url';
 import type { BuildEvent, BuildListener } from './build.js';
@@ -12,7 +12,7 @@ interface Job {
   root: string; name: string; args: Record<string, unknown>; contextDir?: string;
   skipRefresh: boolean; rearm?: () => void; timer?: NodeJS.Timeout; key: string; resolve: (result: Result) => void; reject: (error: Error) => void; onBuild: BuildListener;
 }
-interface Slot { child: ChildProcess; key?: string; job?: Job; timer?: NodeJS.Timeout; outputs: Set<string>; builds: Map<string, BuildEvent>; root?: string; retiring?: boolean }
+interface Slot { child: ChildProcess; key?: string; job?: Job; timer?: NodeJS.Timeout; outputs: Set<string>; builds: Map<string, BuildEvent>; root?: string; retiring?: boolean; failure?: Error; settled?: boolean; identity?: string }
 
 /** Bounded reusable processes: tree-sitter and per-query globals stay off the HTTP loop. */
 export class ToolPool {
@@ -41,7 +41,7 @@ export class ToolPool {
         const error = new Error(`MCP job exceeded ${this.jobTimeoutMs}ms without progress (or waiting in queue)`);
         if (slot) {
           slot.retiring = true;
-          job.reject(error);
+          slot.failure = error;
           slot.child.kill('SIGKILL'); // A CPU-bound parser cannot service a graceful signal.
         } else {
           this.queue = this.queue.filter(j => j !== job);
@@ -67,14 +67,18 @@ export class ToolPool {
   private drain(): void {
     if (this.closed) return;
     for (;;) {
-      const next = this.queue.findIndex(job => !this.slots.some(slot => slot.job?.key === job.key));
+      const available = (job: Job) => !this.slots.some(slot => slot.job?.key === job.key);
+      const placeable = this.queue.findIndex(job => available(job) && (this.slots.length < this.max
+        || this.slots.some(slot => !slot.retiring && !slot.job && slot.root === job.root)));
+      const next = placeable >= 0 ? placeable : this.queue.findIndex(available);
       if (next < 0) return;
       const job = this.queue[next];
       let slot = this.slots.find(s => !s.retiring && !s.job && s.key === job.key)
         ?? this.slots.find(s => !s.retiring && !s.job && s.root === job.root);
       if (!slot && this.slots.length < this.max) slot = this.spawn();
       if (!slot) {
-        const idle = this.slots.find(s => !s.retiring && !s.job);
+        const idle = this.slots.find(s => !s.retiring && !s.job && !this.queue.some(job => job.root === s.root))
+          ?? this.slots.find(s => !s.retiring && !s.job);
         if (idle) {
           idle.retiring = true;
           clearTimeout(idle.timer);
@@ -89,7 +93,9 @@ export class ToolPool {
       slot.builds.clear();
       slot.root = job.root;
       job.rearm?.();
-      slot.outputs.add(contextDirFor(job.root, job.contextDir));
+      const output = contextDirFor(job.root, job.contextDir);
+      slot.outputs.add(output);
+      if (job.name === 'graft_build') slot.builds.set(output, { project_root: job.root, context_dir: output, status: 'started' });
       slot.job = job;
       slot.key = job.key;
       slot.child.send({ root: job.root, name: job.name, args: job.args, contextDir: job.contextDir, skipRefresh: job.skipRefresh }, error => {
@@ -102,6 +108,7 @@ export class ToolPool {
     let entry = fileURLToPath(new URL('./worker.js', import.meta.url));
     if (!existsSync(entry)) entry = entry.replace(/\.js$/, '.ts');
     const slot: Slot = { child: fork(entry, [], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] }), outputs: new Set(), builds: new Map() };
+    slot.identity = slot.child.pid === undefined ? undefined : processIdentity(slot.child.pid);
     this.slots.push(slot);
     slot.child.on('message', (message: { event?: BuildEvent; result?: Result }) => {
       if (slot.retiring) return;
@@ -124,12 +131,13 @@ export class ToolPool {
       this.drain();
     });
     const failed = (error: Error) => {
+      if (slot.settled) return;
+      slot.settled = true;
+      error = slot.failure ?? error;
       clearTimeout(slot.timer);
       // SIGKILL/native crashes cannot run the worker's finally or signal handler.
-      for (const out of slot.outputs) {
-        const lock = join(out, CACHE_DIR, LOCK_FILE);
-        try { if (JSON.parse(readFileSync(lock, 'utf8')).pid === slot.child.pid) rmSync(lock); } catch (error: any) { if (error.code !== 'ENOENT') console.error(`MCP lock cleanup failed for ${lock}:`, error); }
-      }
+      if (slot.child.pid !== undefined) for (const out of slot.outputs)
+        releaseOwnedLock(join(out, CACHE_DIR), slot.child.pid, slot.identity);
       if (slot.job) {
         clearTimeout(slot.job.timer);
         for (const event of slot.builds.values()) slot.job.onBuild({ ...event, status: 'failed', message: error.message });

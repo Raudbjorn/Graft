@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, readdirSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -46,7 +46,8 @@ test('acquireLock reclaims a stale lock only after its owner exits', t => {
   const p = join(cacheDir(d), '.sync.lock');
   const old = (Date.now() - LOCK_STALE_MS - 1000) / 1000;
   utimesSync(p, old, old);
-  assert.equal(acquireLock(d), false, 'a live owner keeps its old lock');
+  const verifiable = Boolean(JSON.parse(readFileSync(p, 'utf8')).identity);
+  assert.equal(acquireLock(d), !verifiable, 'verified live owners retain locks; unverifiable owners have an age cap');
   writeFileSync(p, JSON.stringify({ pid: 2147483647 }));
   utimesSync(p, old, old);
   t.mock.method(process, 'kill', () => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); });
@@ -76,4 +77,23 @@ test('writeJsonAtomic leaves no scratch file behind when the write fails', () =>
     [],
     'no .tmp residue',
   );
+});
+
+
+test('PID reuse, foreign hosts and legacy owners cannot keep locks forever', () => {
+  const d = fresh();
+  assert.ok(acquireLock(d));
+  const path = join(cacheDir(d), '.sync.lock');
+  const owner = JSON.parse(readFileSync(path, 'utf8'));
+  if (owner.identity) {
+    writeFileSync(path, JSON.stringify({ ...owner, identity: `${owner.identity}-old-instance` }));
+    assert.ok(acquireLock(d), 'a reused live PID is a different process instance');
+  }
+  for (const old of [{ pid: process.pid }, { ...owner, host: 'another-host' }]) {
+    writeFileSync(path, JSON.stringify(old));
+    assert.equal(acquireLock(d), false, 'fresh unverifiable locks retain their grace period');
+    const at = (Date.now() - LOCK_STALE_MS - 1000) / 1000;
+    utimesSync(path, at, at);
+    assert.ok(acquireLock(d), 'unverifiable locks have an absolute age cap');
+  }
 });

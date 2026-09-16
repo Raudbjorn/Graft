@@ -210,12 +210,12 @@ export function readExtractCache(outDir: string): ExtractCache {
  * unwritable cache dir must never fail the build (it only costs the next build its
  * reuse). Returns false when nothing was written, including the deliberate case of
  * having no extractor identity: a parse we can't attribute must never be replayed. */
-export function writeExtractCache(outDir: string, cache: ExtractCache): boolean {
+export function writeExtractCache(outDir: string, cache: ExtractCache, prune = true): boolean {
   const path = extractCachePath(outDir);
   if (path === null) return false;
   try {
     writeJsonAtomic(path, cache, true);
-    pruneSidecars(join(outDir, CACHE_DIR), EXTRACT_CACHE_PREFIX);
+    if (prune) pruneSidecars(join(outDir, CACHE_DIR), EXTRACT_CACHE_PREFIX);
     return true;
   } catch {
     return false;

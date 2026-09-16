@@ -252,5 +252,20 @@ test('upgrade upkeep preserves HTTP auth and never silently registers HTTP', () 
   writeFileSync(config, JSON.stringify({ mcpServers: { graft: { command: 'graft', args: ['mcp'] }, foreign: {} } }));
   writeStamp(repo, '0.0.1', ['claude'], { global: false });
   runUpkeep(repo, '99.0.0', { background: false, home });
-  assert.deepEqual(JSON.parse(readFileSync(config, 'utf8')), { mcpServers: { foreign: {} } });
+  assert.deepEqual(JSON.parse(readFileSync(config, 'utf8')), { mcpServers: { graft: { command: 'graft', args: ['mcp'] }, foreign: {} } });
+});
+
+
+test('global upkeep uses the supplied home and preserves legacy MCP entries byte-for-byte', () => {
+  const repo = tmpRepo('upkeep-global'), home = tmpRepo('upkeep-global-home');
+  mkdirSync(join(home, '.codex'), { recursive: true });
+  const claude = '{"mcpServers":{"graft":{"command":"graft","args":["mcp"]}}}';
+  const codex = '[mcp_servers.graft]\ncommand = "graft"\nargs = ["mcp"]\n';
+  writeFileSync(join(home, '.claude.json'), claude);
+  writeFileSync(join(home, '.codex', 'config.toml'), codex);
+  writeStamp(repo, '0.0.1', ['claude', 'agents'], { global: true });
+  runUpkeep(repo, '99.0.0', { background: false, home });
+  assert.equal(readFileSync(join(home, '.claude.json'), 'utf8'), claude);
+  assert.equal(readFileSync(join(home, '.codex', 'config.toml'), 'utf8'), codex);
+  assert.ok(existsSync(join(home, '.claude', 'settings.json')), 'global hook refresh uses the supplied home');
 });

@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { buildGraph } from "../src/graph/build.js";
+import { buildGraph, EXTRACT_CHECKPOINT_FILES } from "../src/graph/build.js";
 import { extractCachePath, extractorStamp, readExtractCache, stampDir } from "../src/graph/extract-cache.js";
 import { fingerprintPath, isClean, probeDrift, readFingerprint } from "../src/graph/fingerprint.js";
 import { readAskIndex } from "../src/ask/index-file.js";
@@ -472,17 +472,13 @@ test("a build repairs an edit that leaves size and mtime untouched", async () =>
   assert.equal(ids.includes("src/math.ts#add"), false, "the old symbol is gone");
 });
 
-test('interrupted extraction resumes from its checkpoint', async t => {
+test('interrupted extraction resumes from its checkpoint', async () => {
   const root = repo();
-  const clock = Date.now;
-  let elapsed = 0;
-  const mocked = t.mock.method(Date, 'now', () => clock() + elapsed);
+  for (let i = 0; i < EXTRACT_CHECKPOINT_FILES; i++) writeFileSync(join(root, `file${i}.ts`), `export const v${i} = ${i};`);
   await assert.rejects(buildGraph(root, { onProgress: ({ index }) => {
-    if (index === 0) elapsed += 31_000;
-    if (index === 1) throw new Error('interrupted after checkpoint');
+    if (index === EXTRACT_CHECKPOINT_FILES + 1) throw new Error('interrupted after checkpoint');
   } }), /interrupted/);
-  mocked.mock.restore();
   const retry = await buildGraph(root);
-  assert.ok(retry.reused >= 1, 'completed extraction survives interruption');
+  assert.ok(retry.reused >= EXTRACT_CHECKPOINT_FILES, 'completed extraction survives interruption');
   assert.ok(retry.parsed >= 1, 'unfinished files are still parsed');
 });

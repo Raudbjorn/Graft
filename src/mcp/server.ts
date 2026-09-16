@@ -1,7 +1,7 @@
 import { maybeFlushInBackground } from '../telemetry/flush.js';
 import { createServer, type IncomingMessage } from 'node:http';
 import { realpathSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -11,6 +11,7 @@ import { TOOLS } from './tools.js';
 import { mcpInstructions } from './instructions.js';
 import { canonicalToolName } from './tool-names.js';
 import { ToolPool } from './pool.js';
+import { validateOutputDirectory } from './paths.js';
 import type { BuildEvent } from './build.js';
 
 import { mcpPort, DEFAULT_MCP_PORT, MCP_BODY_LIMIT_BYTES, MCP_MAX_SESSIONS, MCP_MAX_ROOTS_PER_SESSION, MCP_WORKERS, MCP_SESSION_IDLE_MS, MCP_SESSION_SWEEP_MS, MCP_REQUEST_TIMEOUT_MS } from './config.js';
@@ -21,17 +22,6 @@ function absoluteDirectory(value: unknown, label: string): string {
   const path = realpathSync(value);
   if (!statSync(path).isDirectory()) throw new Error(`${label} must be a directory`);
   return path;
-}
-function outputDirectory(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || !isAbsolute(value)) throw new Error('context_dir must be an absolute directory path');
-  try { return absoluteDirectory(value, 'context_dir'); }
-  catch (error: any) {
-    if (error.code !== 'ENOENT') throw error;
-    const parent = dirname(value);
-    if (parent === value) throw error;
-    return join(outputDirectory(parent)!, value.slice(parent.length));
-  }
 }
 class BodyTooLargeError extends Error {}
 
@@ -65,6 +55,8 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
   let pendingSessions = 0;
   let port = 0;
   let shuttingDown = false;
+  const hosts = new Set<string>();
+  const origins = new Set<string>();
   const authorization = Buffer.from(`Bearer ${opts.token}`);
   const schemas = TOOLS.map(tool => {
     const schema = tool.inputSchema as { properties?: object; required?: string[] };
@@ -78,10 +70,17 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
   const http = createServer(async (req, res) => {
     const reject = (status: number, message: string) => { res.writeHead(status, { 'Content-Type': 'text/plain' }); res.end(message); };
     if (shuttingDown) return reject(503, 'MCP server is shutting down');
-    if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host ?? '')) return reject(403, 'Invalid Host');
-    if (req.headers.origin && ![`http://127.0.0.1:${port}`, `http://localhost:${port}`].includes(req.headers.origin)) return reject(403, 'Invalid Origin');
+    if (!hosts.has(req.headers.host ?? '')) return reject(403, 'Invalid Host');
+    if (req.headers.origin && !origins.has(req.headers.origin)) return reject(403, 'Invalid Origin');
     const given = Buffer.from(req.headers.authorization ?? '');
-    if (given.length !== authorization.length || !timingSafeEqual(given, authorization)) return reject(401, 'Unauthorized');
+    if (given.length !== authorization.length || !timingSafeEqual(given, authorization)) {
+      const header = req.headers.authorization;
+      const reason = !header ? 'missing-header' : /^(?:Bearer\s*)$/i.test(header) ? 'empty-token'
+        : /\$\{|\{env:/.test(header) ? 'unexpanded-variable'
+        : !/^Bearer /i.test(header) ? 'invalid-scheme' : 'token-mismatch';
+      console.error(`MCP authentication rejected: ${reason}`);
+      return reject(401, 'Unauthorized');
+    }
     if (req.url !== '/mcp') return reject(404, 'Not found');
     if (!['GET', 'POST', 'DELETE'].includes(req.method ?? '')) { res.setHeader('Allow', 'GET, POST, DELETE'); return reject(405, 'Method not allowed'); }
     if (Number(req.headers['content-length'] ?? 0) > MCP_BODY_LIMIT_BYTES) return reject(413, 'Request body exceeds 1 MiB');
@@ -119,7 +118,8 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
             const validation = validators.get(name)!(args);
             if (!validation.valid) throw new Error(validation.errorMessage);
             const root = absoluteDirectory(args.project_root, 'project_root');
-            const contextDir = outputDirectory(args.context_dir);
+            const output = validateOutputDirectory(root, args.context_dir);
+            const contextDir = args.context_dir === undefined ? undefined : output;
             if (current.roots.size >= MCP_MAX_ROOTS_PER_SESSION && !current.roots.has(root)) throw new Error('Too many repository subscriptions in this session');
             current.roots.add(root);
             current.active++;
@@ -158,14 +158,25 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
     }
   });
   http.requestTimeout = MCP_REQUEST_TIMEOUT_MS;
-  await new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(opts.port ?? mcpPort(), '127.0.0.1', resolve); });
+  await new Promise<void>((resolve, reject) => {
+    const startupError = (error: Error) => { http.off('listening', ready); reject(error); };
+    const ready = () => { http.off('error', startupError); resolve(); };
+    http.once('error', startupError);
+    http.once('listening', ready);
+    http.listen(opts.port ?? mcpPort(), '127.0.0.1');
+  });
   port = (http.address() as { port: number }).port;
+  for (const host of ['127.0.0.1', 'localhost']) {
+    hosts.add(`${host}:${port}`);
+    origins.add(`http://${host}:${port}`);
+    if (port === 80) { hosts.add(host); origins.add(`http://${host}`); }
+  }
   const expiry = setInterval(() => {
     for (const session of sessions.values()) if (!session.active && !session.streams && Date.now() - session.touched > (opts.sessionIdleMs ?? MCP_SESSION_IDLE_MS)) void closeSession(session);
   }, opts.sessionSweepMs ?? MCP_SESSION_SWEEP_MS);
   expiry.unref();
   let closing: Promise<void> | undefined;
-  return { url: `http://127.0.0.1:${port}/mcp`,
+  const running = { url: `http://127.0.0.1:${port}/mcp`,
     close: () => closing ??= (async () => {
       shuttingDown = true;
       clearInterval(expiry);
@@ -179,4 +190,10 @@ export async function startMcpServer(opts: { port?: number; token: string; versi
       }
     })(),
   };
+  http.on('error', error => {
+    console.error('MCP listener failed:', error);
+    void running.close().catch(error => console.error('MCP cleanup after listener failure failed:', error))
+      .finally(() => process.exit(1));
+  });
+  return running;
 }

@@ -106,7 +106,7 @@ test('runHostsInit --agents muse writes repo hooks and skips unverified HTTP reg
   assert.ok(existsSync(shimPath(repo)), 'shim written in the repo');
   assert.ok(r.hooks.some((h) => h.id === 'muse-hooks'), 'reported in result.hooks');
   assert.ok(existsSync(join(repo, 'AGENTS.md')), 'instruction section written');
-  assert.deepEqual(r.mcp, [], 'unverified HTTP host does not get a broken registration');
+  assert.deepEqual(r.mcp.map(m => m.action), ['skipped'], 'unverified HTTP registration reported');
   assert.ok(!existsSync(mcpPath(home)));
 });
 
@@ -122,7 +122,7 @@ test('existing settings keep their keys; foreign servers and schema survive', ()
   assert.ok((settings.mcpServers as any).other, 'foreign server preserved');
   assert.ok(!(settings.mcpServers as any).graft, 'unverified HTTP registration skipped');
   const again = runHostsInit(repo, { home, agents: ['muse'] });
-  assert.deepEqual(again.mcp, [], 'idempotent');
+  assert.deepEqual(again.mcp.map(m => m.action), ['skipped'], 'idempotent');
 });
 
 test('muse hooks are repo-local, so --no-global does NOT suppress them (MCP is)', () => {

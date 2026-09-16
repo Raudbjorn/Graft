@@ -3,7 +3,7 @@ Description=Graft local MCP graph daemon
 
 [Service]
 Type=simple
-EnvironmentFile=%E/graft/mcp.env
+EnvironmentFile=%h/.config/graft/mcp.env
 ExecStart=/usr/bin/graft mcp
 Restart=on-failure
 RestartSec=3

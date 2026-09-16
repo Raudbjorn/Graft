@@ -21,12 +21,11 @@
  * CLI print/exit wrappers and the per-child build orchestration live in
  * `workspace-cli.ts`; `mcp/tools.ts` calls the federate* functions directly.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative, isAbsolute } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { join, relative, isAbsolute, dirname } from "node:path";
 import { GRAPH_DIR } from "./write.js";
 import { cardPathFor } from "./cards.js";
-import { LOCK_FILE } from "../util/state.js";
-import { contextDirFor, CACHE_DIR } from "../context/node-file.js";
+import { contextDirFor } from "../context/node-file.js";
 import { checkGraph } from "./check.js";
 import { loadGraphCached } from "./load.js";
 import { buildRepoMap, formatRepoMap } from "./map.js";
@@ -128,19 +127,27 @@ export function migrationNote(children: string[]): string {
 export function clearParentGraft(root: string, override?: string, preserveUnrelated = false): void {
   const out = contextDirFor(root, override);
   if (!preserveUnrelated) { rmSync(out, { recursive: true, force: true }); return; }
-  // The daemon holds the parent lock here. Remove known graph artifacts only.
+  // Leave caches and foreign .graph files intact; only remove this graph's files.
   const graph = loadGraphCached(out);
-  for (const node of graph?.nodes ?? []) {
+  if (!graph) return;
+  const prune = (dir: string): void => {
+    while (dir !== out && existsSync(dir) && readdirSync(dir).length === 0) {
+      rmdirSync(dir);
+      dir = dirname(dir);
+    }
+  };
+  for (const node of graph.nodes) {
     const card = cardPathFor(out, node.path);
     const rel = relative(out, card);
-    if (!rel.startsWith('..') && !isAbsolute(rel)) rmSync(card, { force: true });
+    if (rel && !rel.startsWith('..') && !isAbsolute(rel)) {
+      rmSync(card, { force: true });
+      prune(dirname(card));
+    }
   }
-  rmSync(join(out, GRAPH_DIR), { recursive: true, force: true });
-  rmSync(join(out, 'INDEX.md'), { force: true });
-  const cache = join(out, CACHE_DIR);
-  if (existsSync(cache)) for (const entry of readdirSync(cache)) {
-    if (entry !== LOCK_FILE) rmSync(join(cache, entry), { recursive: true, force: true });
-  }
+  rmSync(wiringPath(out), { force: true });
+  prune(join(out, GRAPH_DIR));
+  const index = join(out, 'INDEX.md');
+  if (existsSync(index) && readFileSync(index, 'utf8').startsWith('# graft — repo map\n')) rmSync(index);
 }
 
 export interface LoadedChild {

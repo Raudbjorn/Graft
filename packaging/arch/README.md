@@ -11,7 +11,7 @@ cd packaging/arch
 makepkg -si
 graft-mcp-setup
 set -a
-source "${XDG_CONFIG_HOME:-$HOME/.config}/graft/mcp.env"
+source "$(node -p 'require("node:os").userInfo().homedir')/.config/graft/mcp.env"
 set +a
 ```
 
@@ -35,14 +35,14 @@ Claude Code `.mcp.json`:
 Codex uses `url` and `bearer_token_env_var = "GRAFT_MCP_TOKEN"`. OpenCode uses
 `type: "remote"`, `oauth: false`, and `Bearer {env:GRAFT_MCP_TOKEN}` in headers.
 Cursor uses `${env:GRAFT_MCP_TOKEN}`. Gemini uses `httpUrl`. Kiro and Droid use
-URL/header configurations. Muse, Grok and Antigravity registration is skipped
+URL/header configurations with `${GRAFT_MCP_TOKEN}` expansion. [Kiro](https://kiro.dev/docs/mcp/configuration/) requires approval of that environment variable; [Droid](https://docs.factory.ai/harness/mcp) reads it from the launching shell. Muse, Grok and Antigravity registration is skipped
 with an explanation until authenticated Streamable HTTP support is verified;
 use the Graft CLI with those hosts.
 
 ## Tools
 
 Every call requires an absolute `project_root`. Optional `context_dir` selects
-an absolute graph output directory. Example:
+an absolute graph output directory strictly inside `project_root`. Output trees containing symlinks are rejected. Workspace conversion removes known graph cards and wiring, preserving unrelated files and cache entries. Example:
 
 ```json
 {"name":"graft_build","arguments":{"project_root":"/home/me/project"}}
@@ -81,7 +81,7 @@ ExecStart=/usr/bin/graft mcp
 
 Then set `GRAFT_MCP_URL=http://127.0.0.1:9000/mcp` before explicitly
 regenerating host configurations. Only HTTP loopback URLs are accepted; localhost is normalized to IPv4 127.0.0.1. `--port`, if supplied, must match that URL. The token is required on every HTTP request.
-All authenticated clients have the filesystem access of the service user.
+Authentication failures log a reason (missing/empty token, unexpanded variable, invalid scheme or mismatch), never the token. All authenticated clients have the filesystem access of the service user. The service and setup use the account home’s `.config/graft/mcp.env`, independent of `XDG_CONFIG_HOME`.
 
 At most four reusable worker processes run tools. Calls for one repository/output
 are serialized, identical in-flight builds are shared, and excess work queues.
@@ -89,7 +89,7 @@ Workers exit after 60 seconds idle and are replaced when switching repositories,
 so native grammars and language packs stay isolated. Jobs time out after two minutes
 without progress (or in the queue), configurable with `GRAFT_MCP_JOB_TIMEOUT_MS`.
 Build progress renews the timer; lock waits report progress and have a separate
-five-minute limit. Extraction checkpoints every 30 seconds let retries reuse
+5½-minute limit. Unverifiable legacy/foreign lock owners can be reclaimed after five minutes; Linux owners are checked by host, boot, PID namespace and process start identity. Extraction checkpoints after 1,024 files and then at doubling intervals let retries reuse
 completed files. A killed refresh retries the query against the last saved graph
 with a stale-answer warning. Graph caches retain up to 16 entries/128 MiB per cache,
 plus one oversized active graph when needed; these are serialized sizes, not RSS limits. Four occupied workers can delay another
@@ -107,8 +107,7 @@ References: [MCP SDK](https://ts.sdk.modelcontextprotocol.io/server),
 ### Upgrading from stdio or installing through npm
 
 Upkeep refreshes hooks and skills, but does not opt clients into HTTP or replace
-existing HTTP credentials. Old graft stdio registrations are removed with a
-setup message. Start `graft mcp` with `GRAFT_MCP_TOKEN` set, export the same token
+existing MCP registrations. Token-less init also preserves existing registrations. Successful explicit HTTP registration replaces a selected host’s old entry; unsupported hosts retain their entries with a skipped-row explanation. Start `graft mcp` with `GRAFT_MCP_TOKEN` set, export the same token
 in the environment that starts your MCP client, then run `graft init` explicitly.
 Registration is skipped if the token is absent. For Arch, `graft-mcp-setup`
 creates the token and starts the user service; follow its environment instructions.

@@ -78,7 +78,11 @@ test('codex TOML append preserves existing content', () => {
 
 test('unverified HTTP hosts leave existing configuration alone', () => {
   const repo = fresh(); const home = fresh();
-  for (const id of ['grok', 'muse', 'antigravity']) assert.deepEqual(registerMcpConfigs(repo, [id], { home }), []);
+  for (const id of ['grok', 'muse', 'antigravity']) {
+    const [result] = registerMcpConfigs(repo, [id], { home });
+    assert.equal(result.action, 'skipped');
+    assert.match((result as any).reason, /preserved/);
+  }
   assert.ok(!existsSync(join(repo, '.grok', 'config.toml')));
   assert.ok(!existsSync(join(home, '.config', 'muse', 'settings.json')));
 });
@@ -113,7 +117,7 @@ test('HTTP entry keeps secrets out of configuration and supports a custom URL', 
   }
 });
 
-test('registration without a token retires stdio but does not overwrite HTTP credentials', () => {
+test('registration without a token preserves both stdio and HTTP credentials', () => {
   const repo = fresh(), home = fresh();
   const saved = process.env.GRAFT_MCP_TOKEN;
   delete process.env.GRAFT_MCP_TOKEN;
@@ -127,13 +131,13 @@ test('registration without a token retires stdio but does not overwrite HTTP cre
     existing.mcpServers.graft = { command: 'graft', args: ['mcp'] } as any;
     writeFileSync(path, JSON.stringify(existing));
     registerMcpConfigs(repo, ['cursor'], { home });
-    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { mcpServers: { foreign: {} } });
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), existing);
     registerMcpConfigs(repo, ['gemini'], { home });
     assert.equal(existsSync(join(repo, '.gemini', 'settings.json')), false);
   } finally { if (saved !== undefined) process.env.GRAFT_MCP_TOKEN = saved; }
 });
 
-test('selected unsupported hosts lose legacy stdio entries and keep foreign entries', () => {
+test('selected unsupported hosts preserve legacy and foreign entries', () => {
   const repo = fresh(), home = fresh();
   const paths = [join(home, '.config', 'muse', 'settings.json'), join(home, '.gemini', 'config', 'mcp_config.json')];
   for (const path of paths) {
@@ -143,22 +147,22 @@ test('selected unsupported hosts lose legacy stdio entries and keep foreign entr
   mkdirSync(join(repo, '.grok'));
   writeFileSync(join(repo, '.grok', 'config.toml'), '[mcp_servers.graft]\ncommand = "graft"\nargs = ["mcp"]\n\n[mcp_servers.foreign]\ncommand = "other"\n');
   registerMcpConfigs(repo, ['muse', 'antigravity', 'grok'], { home });
-  for (const path of paths) assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { mcpServers: { foreign: {} } });
-  assert.doesNotMatch(readFileSync(join(repo, '.grok', 'config.toml'), 'utf8'), /mcp_servers.graft/);
+  for (const path of paths) assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { mcpServers: { graft: { command: 'graft', args: ['mcp'] }, foreign: {} } });
+  assert.match(readFileSync(join(repo, '.grok', 'config.toml'), 'utf8'), /mcp_servers.graft/);
   assert.match(readFileSync(join(repo, '.grok', 'config.toml'), 'utf8'), /mcp_servers.foreign/);
 });
 
 test('daemon URL rejects remote origins and credential-bearing URLs', () => {
   const saved = process.env.GRAFT_MCP_URL;
   try {
-    for (const url of ['https://evil.example/mcp', 'http://evil.example/mcp', 'http://user:secret@localhost/mcp', 'http://localhost/mcp?token=x', 'http://localhost/mcp#x']) {
+    for (const url of ['https://evil.example/mcp', 'http://evil.example/mcp', 'http://user:secret@localhost/mcp', 'http://localhost/mcp?token=x', 'http://localhost/mcp#x', 'http://127.0.0.1:0/mcp']) {
       process.env.GRAFT_MCP_URL = url;
       assert.throws(serverEntry, /loopback/);
     }
   } finally { if (saved === undefined) delete process.env.GRAFT_MCP_URL; else process.env.GRAFT_MCP_URL = saved; }
 });
 
-test('legacy OpenCode command arrays are retired without touching remote entries', () => {
+test('legacy OpenCode command arrays are replaced only with a configured token', () => {
   const repo = fresh(), home = fresh();
   mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
   const path = join(repo, 'opencode.json');
@@ -167,9 +171,15 @@ test('legacy OpenCode command arrays are retired without touching remote entries
   delete process.env.GRAFT_MCP_TOKEN;
   try {
     const result = registerMcpConfigs(repo, ['agents'], { home });
-    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { mcp: { foreign: {} } });
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).mcp.graft.command, ['npx', '-y', '@nanonets/graft', 'mcp']);
     assert.equal(result[0].action, 'skipped');
     assert.match((result[0] as any).reason, /GRAFT_MCP_TOKEN/);
+    process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
+    registerMcpConfigs(repo, ['agents'], { home });
+    const migrated = JSON.parse(readFileSync(path, 'utf8'));
+    assert.equal(migrated.mcp.graft.type, 'remote');
+    assert.equal(migrated.mcp.graft.command, undefined);
+    assert.deepEqual(migrated.mcp.foreign, {});
   } finally { if (saved !== undefined) process.env.GRAFT_MCP_TOKEN = saved; }
 });
 

@@ -2,7 +2,7 @@ import { request } from 'node:http';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, unlinkSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -146,6 +146,11 @@ test('workspace builds keep child graphs separate and preserve custom output fil
   await buildGraph(root, { contextDir: out });
   assert.ok(existsSync(join(out, '.graph', 'wiring.json')));
   writeFileSync(join(out, 'keep.txt'), 'user data');
+  mkdirSync(join(out, '.cache', 'mozilla'), { recursive: true });
+  writeFileSync(join(out, '.cache', 'mozilla', 'profile.db'), 'profile');
+  writeFileSync(join(out, '.cache', 'paru-pkg.tar'), 'package');
+  writeFileSync(join(out, '.graph', 'user.db'), 'foreign graph data');
+  writeFileSync(join(out, 'INDEX.md'), 'user index');
   const server = await startMcpServer({ port: 0, token });
   const { client, transport } = await connect(server.url);
   t.after(async () => { await transport.terminateSession(); await client.close(); await server.close(); rmSync(root, { recursive: true, force: true }); });
@@ -156,6 +161,11 @@ test('workspace builds keep child graphs separate and preserve custom output fil
   for (const child of built.children) assert.ok(existsSync(child.graph_path));
   assert.equal(existsSync(join(out, '.graph', 'wiring.json')), false, 'remove the obsolete parent graph');
   assert.equal(existsSync(join(out, 'one', 'index.md')), false, 'remove the obsolete parent cards');
+  assert.equal(existsSync(join(out, 'one')), false, 'remove empty mirrored directories');
+  assert.equal(readFileSync(join(out, '.cache', 'mozilla', 'profile.db'), 'utf8'), 'profile');
+  assert.equal(readFileSync(join(out, '.cache', 'paru-pkg.tar'), 'utf8'), 'package');
+  assert.equal(readFileSync(join(out, '.graph', 'user.db'), 'utf8'), 'foreign graph data');
+  assert.equal(readFileSync(join(out, 'INDEX.md'), 'utf8'), 'user index');
   assert.ok(existsSync(join(out, 'keep.txt')), 'workspace build must not delete unrelated files');
   assert.ok(existsSync(built.graph_path));
   const query = await client.callTool({ name: 'graft_find_all', arguments: { project_root: root, context_dir: out, pattern: 'function' } });
@@ -209,10 +219,13 @@ test('worker deadline releases capacity without removing a foreign build lock', 
   const pool = new ToolPool(1, 100, 1500);
   t.after(async () => { await pool.close(); rmSync(root, { recursive: true, force: true }); });
   assert.ok(acquireLockIn(cache));
+  const failures: any[] = [];
   await assert.rejects(pool.run(root, 'graft_build', {}, undefined, event => {
+    if (event.status === 'failed') failures.push(event);
     if (event.status === 'progress') (pool as any).slots[0].child.kill('SIGSTOP');
   }), /without progress/);
-  await delay(100);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].context_dir, join(root, 'graft'));
   assert.ok(existsSync(join(cache, '.sync.lock')), 'the lock belongs to the test process');
   releaseLockIn(cache);
   assert.equal((await pool.run(root, 'graft_repo_map', {}, undefined, () => {})).isError, true);
@@ -250,6 +263,8 @@ test('hookless clients get upkeep through the worker and builds are tracked', { 
   t.after(async () => { await client.close(); await server.close(); rmSync(root, { recursive: true, force: true }); });
   const answer: any = await client.callTool({ name: 'graft_repo_map', arguments: { project_root: root } });
   assert.match(answer.content.map((item: any) => item.text).join('\n'), /refreshed this repo/);
+  const second = await client.callTool({ name: 'graft_repo_map', arguments: { project_root: root } });
+  assert.doesNotMatch(JSON.stringify(second), /refreshed this repo/);
   assert.equal(readStamp(root)?.version, runningVersion());
   assert.ok(existsSync(join(root, 'GEMINI.md')));
   assert.equal(existsSync(join(root, '.gemini', 'settings.json')), false, 'upkeep must not register HTTP');
@@ -368,4 +383,61 @@ test('chunked oversized JSON receives 413', async t => {
     req.end(' ');
   });
   assert.equal(status, 413);
+});
+
+
+test('HTTP rejects outside output paths and output symlinks without deleting user files', { timeout: 15_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-http-boundary-'));
+  const outside = mkdtempSync(join(tmpdir(), 'graft-http-home-'));
+  for (const child of ['one', 'two']) { mkdirSync(join(root, child)); execFileSync('git', ['init', '-q', join(root, child)]); }
+  const files = ['.cache/mozilla/profile.db', '.cache/paru-pkg.tar', '.graph/foreign.json', 'INDEX.md', 'unrelated.txt'];
+  for (const file of files) { mkdirSync(join(outside, file, '..'), { recursive: true }); writeFileSync(join(outside, file), file); }
+  const server = await startMcpServer({ port: 0, token });
+  const { client } = await connect(server.url);
+  t.after(async () => { await client.close(); await server.close(); for (const dir of [root, outside]) rmSync(dir, { recursive: true, force: true }); });
+  for (const output of [outside, root]) {
+    const result = await client.callTool({ name: 'graft_build', arguments: { project_root: root, context_dir: output } });
+    assert.equal(result.isError, true);
+    assert.match(text(result), /strictly inside/);
+  }
+  symlinkSync(outside, join(root, 'graft'), 'dir');
+  assert.equal((await client.callTool({ name: 'graft_build', arguments: { project_root: root } })).isError, true);
+  unlinkSync(join(root, 'graft'));
+  mkdirSync(join(root, 'graft'));
+  symlinkSync(join(outside, '.cache'), join(root, 'graft', '.cache'), 'dir');
+  assert.equal((await client.callTool({ name: 'graft_build', arguments: { project_root: root } })).isError, true);
+  unlinkSync(join(root, 'graft', '.cache'));
+  writeFileSync(join(root, 'graft', 'workspace.json'), JSON.stringify({ version: 1, children: ['one', 'two'] }));
+  symlinkSync(outside, join(root, 'one', 'graft'), 'dir');
+  assert.equal((await client.callTool({ name: 'graft_find_all', arguments: { project_root: root, pattern: 'anything' } })).isError, true);
+  for (const file of files) assert.equal(readFileSync(join(outside, file), 'utf8'), file);
+});
+
+test('authentication diagnostics classify failures without exposing token values', async t => {
+  const server = await startMcpServer({ port: 0, token });
+  t.after(() => server.close());
+  const logs: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => logs.push(args.join(' ')));
+  for (const header of [undefined, 'Bearer ', 'Bearer ${GRAFT_MCP_TOKEN}', 'Bearer wrong-secret', 'Basic forbidden-secret']) {
+    assert.equal((await fetch(server.url, { headers: header ? { Authorization: header } : {} })).status, 401);
+  }
+  for (const reason of ['missing-header', 'empty-token', 'unexpanded-variable', 'token-mismatch', 'invalid-scheme']) assert.ok(logs.some(log => log.includes(reason)));
+  assert.doesNotMatch(logs.join('\n'), /wrong-secret|forbidden-secret|test-token-only/);
+});
+
+test('queued warm-repo work runs before replacing its worker for a cold repo', { timeout: 15_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-pool-order-'));
+  const cold = mkdtempSync(join(tmpdir(), 'graft-pool-cold-'));
+  const pool = new ToolPool(1, 5000);
+  t.after(async () => { await pool.close(); for (const dir of [root, cold]) rmSync(dir, { recursive: true, force: true }); });
+  writeFileSync(join(root, 'index.ts'), 'export const value = 1;');
+  const cache = join(root, 'graft', '.cache');
+  assert.ok(acquireLockIn(cache));
+  const build = pool.run(root, 'graft_build', {}, undefined, () => {});
+  const order: string[] = [];
+  const coldJob = pool.run(cold, 'graft_repo_map', {}, undefined, () => {}).then(() => order.push('cold'));
+  const warmJob = pool.run(root, 'graft_repo_map', {}, undefined, () => {}).then(() => order.push('warm'));
+  releaseLockIn(cache);
+  await Promise.all([build, coldJob, warmJob]);
+  assert.deepEqual(order, ['warm', 'cold']);
 });
