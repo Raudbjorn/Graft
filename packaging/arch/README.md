@@ -42,7 +42,7 @@ use the Graft CLI with those hosts.
 ## Tools
 
 Every call requires an absolute `project_root`. Optional `context_dir` selects
-an absolute graph output directory strictly inside `project_root`. Output trees containing symlinks are rejected. Workspace conversion removes known graph cards and wiring, preserving unrelated files and cache entries. Example:
+an absolute graph output directory strictly inside `project_root`. Writes to output trees containing symlinks are rejected; read-only queries remain available, and blocked refreshes report a warning while using the saved graph. Recursive validation runs only before writes, in a worker, and is never cached across calls. Workspace conversion removes known graph cards and wiring, preserving unrelated files and cache entries. An unreadable parent graph stops conversion with a recovery message. Example:
 
 ```json
 {"name":"graft_build","arguments":{"project_root":"/home/me/project"}}
@@ -86,7 +86,7 @@ Authentication failures log a reason (missing/empty token, unexpanded variable, 
 At most four reusable worker processes run tools. Calls for one repository/output
 are serialized, identical in-flight builds are shared, and excess work queues.
 Workers exit after 60 seconds idle and are replaced when switching repositories,
-so native grammars and language packs stay isolated. Jobs time out after two minutes
+so native grammars and language packs stay isolated. Switching workspace children also reloads pack registrations and compiled queries; this trades repeat scans for bounded native memory and correct repository isolation. Jobs time out after two minutes
 without progress (or in the queue), configurable with `GRAFT_MCP_JOB_TIMEOUT_MS`.
 Build progress renews the timer; lock waits report progress and have a separate
 5½-minute limit. Unverifiable legacy/foreign lock owners can be reclaimed after five minutes; Linux owners are checked by host, boot, PID namespace and process start identity. Extraction checkpoints after 1,024 files and then at doubling intervals let retries reuse
@@ -109,7 +109,7 @@ References: [MCP SDK](https://ts.sdk.modelcontextprotocol.io/server),
 Upkeep refreshes hooks and skills, but does not opt clients into HTTP or replace
 existing MCP registrations. Token-less init also preserves existing registrations. Successful explicit HTTP registration replaces a selected host’s old entry; unsupported hosts retain their entries with a skipped-row explanation. Start `graft mcp` with `GRAFT_MCP_TOKEN` set, export the same token
 in the environment that starts your MCP client, then run `graft init` explicitly.
-Registration is skipped if the token is absent. For Arch, `graft-mcp-setup`
+Registration is skipped if the launching shell lacks the token: a running daemon or token file alone cannot export it into the client environment. Export the token in the shell used for init and client startup. For Arch, `graft-mcp-setup`
 creates the token and starts the user service; follow its environment instructions.
 A token in the service environment does not set it in an already-running editor.
 The source checkout does not ship an enabled MCP registration.

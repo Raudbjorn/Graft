@@ -23,7 +23,7 @@
  * on posix, which is what guarantees an existing Mac/Linux graph is byte-identical
  * across this change.
  */
-import { relative, sep } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 
 /** Platform separators → `/`. Identity on posix. */
 export function toPosixPath(p: string): string {
@@ -69,4 +69,10 @@ export function normalizePathPrefix(p: string): string {
   // Trailing separators only; a bare "/" normalizes to "" (match everything),
   // which is exactly how `pathUnderPrefix` reads an empty prefix.
   return stripTrailingSlashes(out);
+}
+
+/** Lexical containment; callers at trust boundaries must resolve symlinks first. */
+export function isStrictlyInside(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }

@@ -85,10 +85,11 @@ function loadCached<T>(
   cache.delete(path);
   cache.set(path, { mtimeMs: st.mtimeMs, size: st.size, value });
   // ponytail: retain one oversized active graph; memory follows that graph, not a hard RSS ceiling.
-  let bytes = [...cache.values()].reduce((sum, entry) => sum + entry.size, 0);
+  let bytes = [...cache.values()].reduce((sum, entry) => sum + (entry.value === null ? 0 : entry.size), 0);
   while (cache.size > 1 && (cache.size > MAX_CACHE_ENTRIES || bytes > MAX_CACHE_BYTES)) {
     const oldest = cache.keys().next().value!;
-    bytes -= cache.get(oldest)!.size;
+    const evicted = cache.get(oldest)!;
+    bytes -= evicted.value === null ? 0 : evicted.size;
     cache.delete(oldest);
   }
   return value;

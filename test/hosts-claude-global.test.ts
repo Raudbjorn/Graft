@@ -19,9 +19,6 @@ process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Pin the MCP launch command to the npx form so expectations don't depend on
-// whether the machine running the tests has graft on PATH.
-process.env.GRAFT_MCP_NPX = '1';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

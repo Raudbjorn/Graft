@@ -1,5 +1,5 @@
 import { MCP_BUILD_LOCK_WAIT_MS, MCP_BUILD_LOCK_POLL_MS } from './config.js';
-import { validateOutputDirectory } from './paths.js';
+import { validateOutputForWrite } from './paths.js';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildGraph } from '../graph/build.js';
@@ -9,19 +9,10 @@ import { splitWorkspace, migrationNote, workspacePath, isWorkspaceBuildRoot } fr
 import { CACHE_DIR, contextDirFor, ensureGitignored } from '../context/node-file.js';
 import { acquireLockIn, releaseLockIn } from '../util/state.js';
 
-export interface BuildEvent {
-  project_root: string;
-  context_dir: string;
-  status: 'started' | 'progress' | 'completed' | 'failed';
-  progress?: number;
-  total?: number;
-  message?: string;
-  graph_path?: string;
-}
-export type BuildListener = (event: BuildEvent) => void;
+import type { BuildEvent, BuildListener } from '../graph/types.js';
 
 export async function buildForMcp(root: string, contextDir?: string, onBuild?: BuildListener, workspaceRoot = root): Promise<Record<string, unknown>> {
-  const out = validateOutputDirectory(workspaceRoot, contextDirFor(root, contextDir));
+  const out = validateOutputForWrite(workspaceRoot, contextDirFor(root, contextDir));
   const event = (status: BuildEvent['status'], extra: Partial<BuildEvent> = {}) =>
     onBuild?.({ project_root: root, context_dir: out, status, ...extra });
   const cache = join(out, CACHE_DIR);

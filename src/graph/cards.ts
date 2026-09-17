@@ -23,6 +23,7 @@ import { CACHE_DIR, readNodes } from "../context/node-file.js";
 import { GRAPH_DIR } from "./write.js";
 
 const INDEX_FILE = "INDEX.md";
+export const INDEX_HEADER = "# graft — repo map";
 /** Where a root-level file card goes when `graft/<stem>.md` is already a concept
  * node (same stem as a slug — Laravel `server.php` vs a "Server" concept). */
 const ROOT_CARD_DIR = "_root";
@@ -209,7 +210,7 @@ export function writeCards(graph: GraphV1, outDir: string): CardStats {
  */
 export function writeIndex(outDir: string, files: CardFileInfo[]): void {
   const lines: string[] = [
-    "# graft — repo map",
+    INDEX_HEADER,
     "",
     "Small markdown nodes summarising this repo. `grep` any term, symbol, or",
     'filename here, or run `graft ask "<task>"`. Each node carries prose plus exact',

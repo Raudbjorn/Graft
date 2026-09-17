@@ -216,7 +216,6 @@ export async function buildGraph(
     if (i >= checkpointFiles) {
       writeExtractCache(outDir, priorExtract, false);
       checkpointFiles *= 2; // Geometric checkpoints avoid serializing the whole graph every few seconds.
-      opts.onProgress?.({ phase: "parse", index: i, total: files.length, file: rel });
     }
     // Unity tier first: scenes/prefabs/metas/meshes are hand-split, never
     // grammar-parsed (stock YAML grammars cannot parse `!u!` tags). Checked

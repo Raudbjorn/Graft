@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { request } from 'node:http';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -172,6 +174,11 @@ test('workspace builds keep child graphs separate and preserve custom output fil
   assert.equal(query.isError, false, text(query));
   assert.match(text(query), /one/);
   assert.match(text(query), /two/);
+  symlinkSync(join(root, 'keep-source'), join(root, 'one', 'graft', 'linked-card.md'));
+  writeFileSync(join(root, 'one', 'index.ts'), 'export function changed() { return 987; }');
+  const stale = await client.callTool({ name: 'graft_find_all', arguments: { project_root: root, context_dir: out, pattern: 'function' } });
+  assert.equal(stale.isError, false, text(stale));
+  assert.match(text(stale), /one: graph refresh skipped.*symlinks/);
 });
 
 
@@ -440,4 +447,35 @@ test('queued warm-repo work runs before replacing its worker for a cold repo', {
   releaseLockIn(cache);
   await Promise.all([build, coldJob, warmJob]);
   assert.deepEqual(order, ['warm', 'cold']);
+});
+
+test('symlinked output remains readable and scans never run on the HTTP loop', { timeout: 15_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-readable-'));
+  const server = await startMcpServer({ port: 0, token });
+  const { client } = await connect(server.url);
+  t.after(async () => { await client.close(); await server.close(); rmSync(root, { recursive: true, force: true }); });
+  writeFileSync(join(root, 'index.ts'), 'export function answer() { return 42; }');
+  assert.equal((await client.callTool({ name: 'graft_build', arguments: { project_root: root } })).isError, false);
+  const out = join(root, 'graft');
+  symlinkSync(join(root, 'index.ts'), join(out, 'linked-card.md'));
+  const original = fs.readdirSync;
+  let scans = 0;
+  const mock = t.mock.method(fs, 'readdirSync', ((path: any, ...args: any[]) => {
+    if (String(path).startsWith(out)) scans++;
+    return (original as any)(path, ...args);
+  }) as any);
+  syncBuiltinESMExports();
+  t.after(() => { mock.mock.restore(); syncBuiltinESMExports(); });
+  for (const [name, args] of [['graft_repo_map', {}], ['graft_file_api', { file: 'index.ts' }], ['graft_find_code', { query: 'answer' }]] as const) {
+    const result = await client.callTool({ name, arguments: { project_root: root, ...args } });
+    assert.equal(result.isError, false, text(result));
+  }
+  writeFileSync(join(root, 'index.ts'), 'export function answer() { return 12345; }');
+  const stale = await client.callTool({ name: 'graft_file_api', arguments: { project_root: root, file: 'index.ts' } });
+  assert.equal(stale.isError, false, text(stale));
+  assert.match(text(stale), /refresh skipped.*symlinks/);
+  const build = await client.callTool({ name: 'graft_build', arguments: { project_root: root } });
+  assert.equal(build.isError, true);
+  assert.match(text(build), /symlinks/);
+  assert.equal(scans, 0, 'HTTP process must not walk output directories, including for builds');
 });

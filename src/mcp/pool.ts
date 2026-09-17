@@ -5,7 +5,7 @@ import { CACHE_DIR, contextDirFor } from '../context/node-file.js';
 import { processIdentity, releaseOwnedLock } from '../util/state.js';
 import { MCP_WORKERS, MCP_WORKER_IDLE_MS, jobTimeoutMs as configuredJobTimeoutMs, MCP_MAX_QUEUED_JOBS, MCP_MAX_BUILD_WAITERS, MCP_SHUTDOWN_GRACE_MS } from './config.js';
 import { fileURLToPath } from 'node:url';
-import type { BuildEvent, BuildListener } from './build.js';
+import type { BuildEvent, BuildListener } from '../graph/types.js';
 
 type Result = { text: string; isError: boolean; notices?: string[] };
 interface Job {

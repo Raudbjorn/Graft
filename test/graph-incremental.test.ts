@@ -475,7 +475,10 @@ test("a build repairs an edit that leaves size and mtime untouched", async () =>
 test('interrupted extraction resumes from its checkpoint', async () => {
   const root = repo();
   for (let i = 0; i < EXTRACT_CHECKPOINT_FILES; i++) writeFileSync(join(root, `file${i}.ts`), `export const v${i} = ${i};`);
+  const seen = new Set<number>();
   await assert.rejects(buildGraph(root, { onProgress: ({ index }) => {
+    assert.ok(!seen.has(index), 'each file reports progress once');
+    seen.add(index);
     if (index === EXTRACT_CHECKPOINT_FILES + 1) throw new Error('interrupted after checkpoint');
   } }), /interrupted/);
   const retry = await buildGraph(root);

@@ -12,7 +12,7 @@ import { mcpInstructions } from './instructions.js';
 import { canonicalToolName } from './tool-names.js';
 import { ToolPool } from './pool.js';
 import { validateOutputDirectory } from './paths.js';
-import type { BuildEvent } from './build.js';
+import type { BuildEvent } from '../graph/types.js';
 
 import { mcpPort, DEFAULT_MCP_PORT, MCP_BODY_LIMIT_BYTES, MCP_MAX_SESSIONS, MCP_MAX_ROOTS_PER_SESSION, MCP_WORKERS, MCP_SESSION_IDLE_MS, MCP_SESSION_SWEEP_MS, MCP_REQUEST_TIMEOUT_MS } from './config.js';
 export { DEFAULT_MCP_PORT } from './config.js';

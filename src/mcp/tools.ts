@@ -2,7 +2,8 @@
  * The MCP tools, as pure functions over the existing engine.
  * `callTool` never throws — hosts get soft errors as isError content.
  */
-import { buildForMcp, type BuildListener } from './build.js';
+import { buildForMcp } from './build.js';
+import type { BuildListener } from '../graph/types.js';
 import { Graft } from '../engine.js';
 import { join } from 'node:path';
 import { formatAsk, skeleton, formatSkeleton } from '../ask/ask.js';
@@ -242,6 +243,7 @@ export async function callTool(
   dirOverride?: string,
   onBuild?: BuildListener,
   skipRefresh = false,
+  beforeWrite?: (root: string, output: string) => void,
 ): Promise<{ text: string; isError: boolean }> {
   try {
     const name = canonicalToolName(requestedName);
@@ -256,8 +258,8 @@ export async function callTool(
     let note: string | null = null;
     if (!skipRefresh && !NO_REFRESH_TOOLS.has(name)) {
       const r = ws
-        ? await ensureFreshChildren(root, ws.children, { contextDir: dirOverride, onBuild })
-        : await ensureFreshGraph(root, { contextDir: dirOverride, onBuild });
+        ? await ensureFreshChildren(root, ws.children, { contextDir: dirOverride, onBuild, beforeWrite })
+        : await ensureFreshGraph(root, { contextDir: dirOverride, onBuild, beforeWrite });
       note = refreshNote(r);
     }
     const fed = ws ? await callWorkspaceTool(root, dirOverride, name, args) : null;

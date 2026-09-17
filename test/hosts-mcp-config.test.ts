@@ -215,11 +215,12 @@ test('daemon address and configurable timeout share validated environment settin
 
 test('CLI missing-token summary names setup, not --no-mcp', () => {
   const repo = fresh();
-  const run = spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--agents', 'claude', 'cursor', '--no-build', '--no-global', '--no-hooks', '--no-statusline'], {
-    encoding: 'utf8', timeout: 15_000, env: { ...process.env, GRAFT_MCP_TOKEN: '', GRAFT_TELEMETRY: '0' },
+  const run = spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--agents', 'claude', 'cursor', '--no-build', '--no-hooks', '--no-statusline'], {
+    encoding: 'utf8', timeout: 15_000, env: { ...process.env, HOME: fresh(), GRAFT_MCP_TOKEN: '', GRAFT_TELEMETRY: '0' },
   });
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stderr, /export GRAFT_MCP_TOKEN/);
+  assert.match(run.stderr, /skipped claude-global-mcp:/);
   assert.doesNotMatch(run.stderr, /registration \(--no-mcp\)/);
   assert.doesNotMatch(run.stderr, /✓ mcp cursor:.*skipped/);
 });

@@ -199,3 +199,24 @@ test('byte budget retains an oversized active graph and two 40 MiB graphs', t =>
   assert.notStrictEqual(loadGraphCached(dirs[0]), large);
   assert.equal(__parseCount.graph, 1, 'an oversized entry is retained only while active, not permanently');
 });
+
+test('an oversized corrupt graph does not evict useful cached graphs', t => {
+  const valid = fixtureDir(), corrupt = fixtureDir();
+  writeGraph({ version: 1, nodes: [node('valid')], edges: [] } as GraphV1, valid);
+  mkdirSync(join(corrupt, '.graph'), { recursive: true });
+  writeFileSync(wiringPath(corrupt), '{truncated');
+  const originalStat = fs.statSync;
+  const mocked = t.mock.method(fs, 'statSync', (path: any, ...args: any[]) => {
+    const stat = (originalStat as any)(path, ...args);
+    if (String(path) === wiringPath(corrupt)) stat.size = MAX_CACHE_BYTES * 2;
+    return stat;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { mocked.mock.restore(); syncBuiltinESMExports(); });
+  const good = loadGraphCached(valid);
+  assert.equal(loadGraphCached(corrupt), null);
+  __resetParseCounts();
+  assert.strictEqual(loadGraphCached(valid), good);
+  assert.equal(loadGraphCached(corrupt), null);
+  assert.equal(__parseCount.graph, 0, 'negative entries retain identity, not file-size budget');
+});

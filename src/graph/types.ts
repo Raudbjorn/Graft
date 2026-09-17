@@ -136,3 +136,15 @@ export interface GraphV1 {
   nodes: NodeV1[];
   edges: EdgeV1[];
 }
+
+/** Transport-neutral graph build lifecycle, shared by refresh and daemon orchestration. */
+export interface BuildEvent {
+  project_root: string;
+  context_dir: string;
+  status: 'started' | 'progress' | 'completed' | 'failed';
+  progress?: number;
+  total?: number;
+  message?: string;
+  graph_path?: string;
+}
+export type BuildListener = (event: BuildEvent) => void;

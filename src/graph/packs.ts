@@ -85,9 +85,10 @@ const registeredDirs = new Set<string>(); // pack directories, so a re-scan is s
 const seenRoots = new Set<string>();
 
 /**
- * Discover and register the packs that apply to `root`. Idempotent per root: the walk
+ * Discover and register the packs that apply to `root`. Idempotent while this root is active: the walk
  * (`listSourceFiles`), the `-e` validation and a test may each call it, and the first
- * call does the work. Returns what it loaded and what it refused; a refused pack is
+ * call does the work. Switching roots clears registrations and recompiles packs
+ * to isolate native queries and keep memory bounded. Returns what it loaded and what it refused; a refused pack is
  * also reported on stderr (`warn`), because silence here is how a language quietly
  * goes missing from a graph.
  */

@@ -1156,6 +1156,11 @@ function wireTarget(
         console.error(`· mcp claude: ${res.mcp.path} (already registered)`);
       else
         console.error(`✓ mcp claude: ${res.mcp.path} (${res.mcp.action}) — restart Claude Code to load the graft MCP server`);
+      for (const entry of res.global) {
+        if (entry.action === 'skipped') console.error(`· skipped ${entry.id}: ${entry.path} (${entry.reason})`);
+        else if (entry.action === 'skipped-unparseable') console.error(`⚠ ${entry.id}: ${entry.path} left unchanged (unparseable)`);
+        else console.error(`${entry.action === 'unchanged' ? '·' : '✓'} ${entry.id}: ${entry.path} (${entry.action})`);
+      }
       console.error(res.built ? "✓ built the graph (graft build)" : "· skipped graph build");
       if (!wantStatusline) console.error("· skipped Claude Code statusLine (--no-statusline)");
       for (const w of res.warnings) console.error(`⚠ ${w}`);

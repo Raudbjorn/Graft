@@ -1,7 +1,8 @@
 import { lstatSync, realpathSync, readdirSync, statSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isStrictlyInside } from '../util/paths.js';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
-/** Resolve absent directories without exceptions; do not follow output-tree symlinks. */
+/** Resolve the output path and enforce containment without walking its contents. */
 export function validateOutputDirectory(root: string, value?: unknown): string {
   if (value !== undefined && (typeof value !== 'string' || !isAbsolute(value)))
     throw new Error('context_dir must be an absolute directory path');
@@ -16,9 +17,14 @@ export function validateOutputDirectory(root: string, value?: unknown): string {
   }
   if (!statSync(ancestor).isDirectory()) throw new Error('context_dir must be a directory');
   const output = join(realpathSync(ancestor), ...missing);
-  const inside = relative(realpathSync(root), output);
-  if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside))
+  if (!isStrictlyInside(realpathSync(root), output))
     throw new Error('context_dir must be strictly inside project_root');
+  return output;
+}
+
+/** Run immediately before a write, in the worker; read-only calls do not scan cards. */
+export function validateOutputForWrite(root: string, value?: unknown): string {
+  const output = validateOutputDirectory(root, value);
   const inspect = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.isSymbolicLink()) throw new Error('Graph output must not contain symlinks');

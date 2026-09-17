@@ -348,7 +348,7 @@ Graft now serves MCP over **Streamable HTTP with SSE notifications**. One local 
 
 On Arch, build/install the package and run `graft-mcp-setup`; see [packaging and service setup](packaging/arch/README.md). For a foreground server, export `GRAFT_MCP_TOKEN` and run `graft mcp` (loopback port 8421; override with `--port`). Start clients with the same token in their environment, then rerun `graft init` for your selected hosts. Skip MCP registration with `--no-mcp`.
 
-Every tool requires an absolute `project_root`; optional `context_dir` selects an absolute output directory strictly inside `project_root`, with no output-tree symlinks. Builds are local, structural, and require no API key. Queries refresh existing graphs. Use `graft_build` to create a missing graph; `graft_repo_map` summarizes it.
+Every tool requires an absolute `project_root`; optional `context_dir` selects an absolute output directory strictly inside `project_root`, with output-tree symlinks rejected before writes. Read-only queries remain available. Builds are local, structural, and require no API key. Queries refresh existing graphs. Use `graft_build` to create a missing graph; `graft_repo_map` summarizes it.
 
 | Tool | Takes | What it's for |
 |---|---|---|

@@ -1,6 +1,10 @@
+import { isStrictlyInside } from '../src/util/paths.js';
+import { buildGraph } from '../src/graph/build.js';
+import { clearParentGraft } from '../src/graph/workspace.js';
+import { INDEX_HEADER } from '../src/graph/cards.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -98,4 +102,52 @@ fi
   assert.ok(existsSync(tokenFile));
   assert.equal(statSync(tokenFile).mode & 0o777, 0o600);
   assert.equal(existsSync(join(root, 'different-manager-config', 'graft', 'mcp.env')), false);
+});
+
+test('corrupt parent graph fails workspace conversion without reporting completion', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-corrupt-parent-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const name of ['one', 'two']) { mkdirSync(join(root, name)); execFileSync('git', ['init', '-q', join(root, name)]); }
+  const out = join(root, 'graft');
+  mkdirSync(join(out, '.graph'), { recursive: true });
+  writeFileSync(join(out, '.graph', 'wiring.json'), '{truncated');
+  writeFileSync(join(out, 'INDEX.md'), INDEX_HEADER + '\r\n');
+  const events: any[] = [];
+  await assert.rejects(buildForMcp(root, undefined, event => events.push(event)), /parent graph is unreadable/);
+  assert.equal(events.at(-1).status, 'failed');
+  assert.equal(events.some(event => event.status === 'completed' && event.project_root === root), false);
+  assert.equal(existsSync(join(out, 'workspace.json')), false);
+  assert.equal(readFileSync(join(out, '.graph', 'wiring.json'), 'utf8'), '{truncated');
+});
+
+test('workspace cleanup recognizes a CRLF generated index', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'graft-crlf-index-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'index.ts'), 'export const value = 1;');
+  await buildGraph(root);
+  const out = join(root, 'graft');
+  writeFileSync(join(out, 'INDEX.md'), INDEX_HEADER + '\r\nrest\r\n');
+  clearParentGraft(root, undefined, true);
+  assert.equal(existsSync(join(out, 'INDEX.md')), false);
+});
+
+test('worker IPC send failure terminates without an unhandled rejection', () => {
+  const result = child(`
+    Object.defineProperty(process, 'connected', { value: true });
+    process.send = () => { throw new Error('injected closed IPC'); };
+    await import('./src/mcp/worker.ts');
+    process.emit('message', { root: '/path/that/does/not/exist', name: 'graft_repo_map', args: {} });
+  `);
+  assert.equal(result.signal, 'SIGTERM', result.stderr);
+  assert.match(result.stderr, /MCP worker IPC failed:.*injected closed IPC/);
+  assert.doesNotMatch(result.stderr, /UnhandledPromiseRejection/);
+});
+
+test('shared containment distinguishes descendants, siblings and dot-prefixed names', () => {
+  const root = resolve('example-root');
+  assert.equal(isStrictlyInside(root, root), false);
+  assert.equal(isStrictlyInside(root, join(root, '..', 'sibling')), false);
+  assert.equal(isStrictlyInside(root, root + '-sibling'), false);
+  assert.equal(isStrictlyInside(root, join(root, '..cards')), true);
+  assert.equal(isStrictlyInside(root, join(root, 'graft', 'nested')), true);
 });

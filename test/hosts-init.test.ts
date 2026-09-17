@@ -3,9 +3,6 @@ process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-// The MCP launch command is resolved from PATH at init time; pin it to the npx
-// form so these expectations are the same on every machine.
-process.env.GRAFT_MCP_NPX = '1';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';

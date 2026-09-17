@@ -1,3 +1,4 @@
+import { isStrictlyInside } from '../util/paths.js';
 /**
  * The on-disk format of the context graph: a folder of plain markdown files
  * under `.context/`, one per node. The files ARE the graph — the frontmatter
@@ -123,7 +124,7 @@ export function contextDirFor(root: string, override?: string): string {
 export function ensureGitignored(root: string, contextDir: string): void {
   if (envTruthy("GRAFT_NO_GITIGNORE")) return;
   const rel = relPosix(root, contextDir);
-  if (rel === "" || rel.startsWith("..")) return; // dir is at/above the repo root — nothing sane to ignore
+  if (!isStrictlyInside(root, contextDir)) return; // only repo descendants can be ignored
   const bare = stripTrailingSlashes(rel); // "graft" (or a `--dir` subpath like "tools/ctx")
   // Root-ANCHORED, so it ignores exactly this repo's `graft/` and not a directory named
   // `graft` at any depth. An unanchored `graft/` also matched `.claude/skills/graft/`, so
