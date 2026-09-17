@@ -306,3 +306,22 @@ test("fileModules + namespaces: a namespace scopes a path to its package; siblin
     "src/user.moon→lib/beta/src/encode.moon",
   ]);
 });
+
+test('switching repositories replaces pack grammars, extensions and namespaces', async () => {
+  const a = repoAndHome(), b = repoAndHome();
+  writePack(a.langs, 'moon', manifest('moon', '.moon', { namespaces: 'package.json' }));
+  const second = writePack(b.langs, 'moon', manifest('moon', '.moon'));
+  // Same grammar and name, a different query: warming B must not reuse A's query.
+  writeFileSync(join(second, 'tags.scm'), '(function_declaration name: (identifier) @name) @definition.class');
+  loadLanguagePacks(a.repo, { home: a.home });
+  await warmGenericGrammars(['moon']);
+  assert.ok(extractGeneric('a.moon', LUA_SRC, 'moon').nodes.some(n => n.kind === 'function'));
+  assert.deepEqual(loadLanguagePacks(b.repo, { home: b.home }).skipped, []);
+  await warmGenericGrammars(['moon']);
+  assert.ok(extractGeneric('b.moon', LUA_SRC, 'moon').nodes.some(n => n.kind === 'class'));
+  loadLanguagePacks(tmp('empty'), { home: a.home });
+  assert.equal(genericLangOf('c.moon'), null);
+  loadLanguagePacks(a.repo, { home: a.home });
+  await warmGenericGrammars(['moon']);
+  assert.ok(extractGeneric('a.moon', LUA_SRC, 'moon').nodes.some(n => n.kind === 'function'));
+});

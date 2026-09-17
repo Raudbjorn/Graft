@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, mkdirSync, readdirSync, utimesSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, readdirSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -40,13 +40,22 @@ test('lock is exclusive then releasable', () => {
   assert.equal(acquireLock(d), true, 'reacquire after release');
 });
 
-test('acquireLock reclaims a stale lock', () => {
+test('acquireLock reclaims a stale lock only after its owner exits', t => {
   const d = fresh();
   assert.equal(acquireLock(d), true);
   const p = join(cacheDir(d), '.sync.lock');
   const old = (Date.now() - LOCK_STALE_MS - 1000) / 1000;
   utimesSync(p, old, old);
-  assert.equal(acquireLock(d), true, 'stale lock reclaimed');
+  const verifiable = Boolean(JSON.parse(readFileSync(p, 'utf8')).identity);
+  assert.equal(acquireLock(d), !verifiable, 'verified live owners retain locks; unverifiable owners have an age cap');
+  const owner = JSON.parse(readFileSync(p, 'utf8'));
+  writeFileSync(p, JSON.stringify({ ...owner, pid: 2147483647 }));
+  const now = Date.now() / 1000;
+  utimesSync(p, now, now); // Fresh lock cannot pass through age-based reclamation.
+  const kill = t.mock.method(process, 'kill', () => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }); });
+  assert.equal(acquireLock(d), true, 'dead owner lock reclaimed');
+  assert.equal(kill.mock.callCount(), 1);
+  assert.deepEqual(kill.mock.calls[0].arguments, [2147483647, 0]);
 });
 
 test('writeJsonAtomic leaves no scratch file behind when the write fails', () => {
@@ -72,4 +81,23 @@ test('writeJsonAtomic leaves no scratch file behind when the write fails', () =>
     [],
     'no .tmp residue',
   );
+});
+
+
+test('PID reuse, foreign hosts and legacy owners cannot keep locks forever', () => {
+  const d = fresh();
+  assert.ok(acquireLock(d));
+  const path = join(cacheDir(d), '.sync.lock');
+  const owner = JSON.parse(readFileSync(path, 'utf8'));
+  if (owner.identity) {
+    writeFileSync(path, JSON.stringify({ ...owner, identity: `${owner.identity}-old-instance` }));
+    assert.ok(acquireLock(d), 'a reused live PID is a different process instance');
+  }
+  for (const old of [{ pid: process.pid }, { ...owner, host: 'another-host' }]) {
+    writeFileSync(path, JSON.stringify(old));
+    assert.equal(acquireLock(d), false, 'fresh unverifiable locks retain their grace period');
+    const at = (Date.now() - LOCK_STALE_MS - 1000) / 1000;
+    utimesSync(path, at, at);
+    assert.ok(acquireLock(d), 'unverifiable locks have an absolute age cap');
+  }
 });

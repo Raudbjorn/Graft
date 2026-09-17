@@ -20,6 +20,7 @@ import {
   writeStamp,
   type WiringOpts,
 } from '../src/upkeep.js';
+import { runUpkeep } from '../src/upkeep-run.js';
 import { tmpRepo } from './helpers.js';
 
 test('compareVersions orders releases numerically, not lexically', () => {
@@ -237,4 +238,34 @@ test('formatWiringRefresh discloses machine-wide writes', () => {
   const local = formatWiringRefresh({ from: '0.7.0', to: '0.11.0', hosts: ['agents'], global: false });
   assert.ok(local);
   assert.doesNotMatch(local, /~\/\.codex/);
+});
+
+
+test('upgrade upkeep preserves HTTP auth and never silently registers HTTP', () => {
+  const repo = tmpRepo('upkeep-http'), home = tmpRepo('upkeep-http-home');
+  const config = join(repo, '.mcp.json');
+  const http = JSON.stringify({ mcpServers: { graft: { type: 'http', url: 'http://localhost:9000/mcp', headers: { Authorization: 'custom' } } } });
+  writeFileSync(config, http);
+  writeStamp(repo, '0.0.1', ['claude'], { global: false });
+  runUpkeep(repo, '99.0.0', { background: false, home });
+  assert.equal(readFileSync(config, 'utf8'), http);
+  writeFileSync(config, JSON.stringify({ mcpServers: { graft: { command: 'graft', args: ['mcp'] }, foreign: {} } }));
+  writeStamp(repo, '0.0.1', ['claude'], { global: false });
+  runUpkeep(repo, '99.0.0', { background: false, home });
+  assert.deepEqual(JSON.parse(readFileSync(config, 'utf8')), { mcpServers: { graft: { command: 'graft', args: ['mcp'] }, foreign: {} } });
+});
+
+
+test('global upkeep uses the supplied home and preserves legacy MCP entries byte-for-byte', () => {
+  const repo = tmpRepo('upkeep-global'), home = tmpRepo('upkeep-global-home');
+  mkdirSync(join(home, '.codex'), { recursive: true });
+  const claude = '{"mcpServers":{"graft":{"command":"graft","args":["mcp"]}}}';
+  const codex = '[mcp_servers.graft]\ncommand = "graft"\nargs = ["mcp"]\n';
+  writeFileSync(join(home, '.claude.json'), claude);
+  writeFileSync(join(home, '.codex', 'config.toml'), codex);
+  writeStamp(repo, '0.0.1', ['claude', 'agents'], { global: true });
+  runUpkeep(repo, '99.0.0', { background: false, home });
+  assert.equal(readFileSync(join(home, '.claude.json'), 'utf8'), claude);
+  assert.equal(readFileSync(join(home, '.codex', 'config.toml'), 'utf8'), codex);
+  assert.ok(existsSync(join(home, '.claude', 'settings.json')), 'global hook refresh uses the supplied home');
 });

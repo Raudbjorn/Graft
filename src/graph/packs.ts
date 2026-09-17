@@ -43,8 +43,8 @@ import { basename, join, resolve } from "node:path";
 import { relPosix } from "../util/paths.js";
 import { languageOf } from "./extract.js";
 import { containerLangOf } from "./container.js";
-import { GENERIC_LANGS, allGenericLangs, genericLangOf, registerGenericLang } from "./generic.js";
-import { registerLspServer } from "./lsp/registry.js";
+import { GENERIC_LANGS, allGenericLangs, genericLangOf, registerGenericLang, clearPackLanguages } from "./generic.js";
+import { registerLspServer, clearPackServers } from "./lsp/registry.js";
 
 export interface LanguagePack {
   name: string;
@@ -85,9 +85,10 @@ const registeredDirs = new Set<string>(); // pack directories, so a re-scan is s
 const seenRoots = new Set<string>();
 
 /**
- * Discover and register the packs that apply to `root`. Idempotent per root: the walk
+ * Discover and register the packs that apply to `root`. Idempotent while this root is active: the walk
  * (`listSourceFiles`), the `-e` validation and a test may each call it, and the first
- * call does the work. Returns what it loaded and what it refused; a refused pack is
+ * call does the work. Switching roots clears registrations and recompiles packs
+ * to isolate native queries and keep memory bounded. Returns what it loaded and what it refused; a refused pack is
  * also reported on stderr (`warn`), because silence here is how a language quietly
  * goes missing from a graph.
  */
@@ -99,6 +100,9 @@ export function loadLanguagePacks(
   const key = `${resolve(root)}\0${home}`;
   const result: PackLoadResult = { loaded: [], skipped: [] };
   if (seenRoots.has(key)) return result;
+  clearLanguagePacks();
+  clearPackLanguages();
+  clearPackServers();
   seenRoots.add(key);
   const warn = opts.warn ?? ((m: string) => console.error(m));
 
@@ -256,10 +260,12 @@ export function loadNamespaces(root: string, repoFiles: readonly string[]): void
   }
 }
 
-/** Test seam: forget every loaded pack and root, so tests can load fixtures afresh. */
-export function resetLanguagePacksForTest(): void {
+/** Clear discovery and namespace bookkeeping before selecting another repository. */
+export function clearLanguagePacks(): void {
   registered.clear();
   registeredDirs.clear();
   seenRoots.clear();
   namespacedRoots.clear();
 }
+
+export const resetLanguagePacksForTest = clearLanguagePacks;

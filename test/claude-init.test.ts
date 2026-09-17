@@ -1,9 +1,8 @@
+// Explicit daemon registration tests opt in with a non-secret test token.
+process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-// The MCP launch command is resolved from PATH at init time; pin it to the npx
-// form so these expectations are the same on every machine.
-process.env.GRAFT_MCP_NPX = '1';
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

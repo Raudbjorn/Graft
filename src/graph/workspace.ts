@@ -1,3 +1,4 @@
+import { isStrictlyInside } from '../util/paths.js';
 /**
  * Workspace federation — a "workspace" is a parent directory that holds two or
  * more immediate git-repo children and has no source graph of its own. Instead
@@ -21,8 +22,10 @@
  * CLI print/exit wrappers and the per-child build orchestration live in
  * `workspace-cli.ts`; `mcp/tools.ts` calls the federate* functions directly.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { join, relative, isAbsolute, dirname } from "node:path";
+import { GRAPH_DIR } from "./write.js";
+import { cardPathFor, INDEX_HEADER } from "./cards.js";
 import { contextDirFor } from "../context/node-file.js";
 import { checkGraph } from "./check.js";
 import { loadGraphCached } from "./load.js";
@@ -122,8 +125,32 @@ export function migrationNote(children: string[]): string {
  * any stale cards — so after `writeWorkspace` the parent holds ONLY
  * workspace.json. Child graphs live in sibling `<child>/graft/`, never under
  * this dir, so they are untouched. */
-export function clearParentGraft(root: string, override?: string): void {
-  rmSync(contextDirFor(root, override), { recursive: true, force: true });
+export function clearParentGraft(root: string, override?: string, preserveUnrelated = false): void {
+  const out = contextDirFor(root, override);
+  if (!preserveUnrelated) { rmSync(out, { recursive: true, force: true }); return; }
+  // Leave caches and foreign .graph files intact; only remove this graph's files.
+  const graph = loadGraphCached(out);
+  if (!graph) {
+    if (existsSync(wiringPath(out))) throw new Error('Cannot convert workspace: parent graph is unreadable; rebuild or move its output before retrying');
+    return;
+  }
+  const prune = (dir: string): void => {
+    while (dir !== out && existsSync(dir) && readdirSync(dir).length === 0) {
+      rmdirSync(dir);
+      dir = dirname(dir);
+    }
+  };
+  for (const node of graph.nodes) {
+    const card = cardPathFor(out, node.path);
+    if (isStrictlyInside(out, card)) {
+      rmSync(card, { force: true });
+      prune(dirname(card));
+    }
+  }
+  rmSync(wiringPath(out), { force: true });
+  prune(join(out, GRAPH_DIR));
+  const index = join(out, 'INDEX.md');
+  if (existsSync(index) && readFileSync(index, 'utf8').split(/\r?\n/, 1)[0] === INDEX_HEADER) rmSync(index);
 }
 
 export interface LoadedChild {
@@ -725,13 +752,14 @@ export async function splitWorkspace(
   override: string | undefined,
   buildChild: (childDir: string, childName: string) => Promise<void>,
   onStart?: (info: { children: string[]; migrated: boolean }) => void,
+  preserveUnrelated = false,
 ): Promise<{ children: string[]; migrated: boolean }> {
   const children = discoverWorkspaceChildren(root).slice().sort();
   const migrated = hasMegaGraph(root, override);
   onStart?.({ children, migrated });
   for (const child of children) await buildChild(join(root, child), child);
-  clearParentGraft(root, override); // drop the mega-graph/.cache/cards…
-  writeWorkspace(root, { version: 1, children }, override); // …leaving ONLY workspace.json
+  clearParentGraft(root, override, preserveUnrelated); // remove the obsolete parent graph
+  writeWorkspace(root, { version: 1, children }, override);
   return { children, migrated };
 }
 

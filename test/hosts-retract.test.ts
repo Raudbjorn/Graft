@@ -1,9 +1,8 @@
+// Explicit daemon registration tests opt in with a non-secret test token.
+process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Pin the MCP launch form so expectations don't depend on whether the machine
-// running the tests happens to have graft on PATH.
-process.env.GRAFT_MCP_NPX = '1';
 
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -338,9 +337,9 @@ test('emptied directories are pruned, not left hollow', () => {
 
 test('a stale [mcp_servers.graft] is replaced, not skipped', () => {
   const d = fresh();
-  const cfg = write(d, join('.grok', 'config.toml'),
+  const cfg = write(d, join('.codex', 'config.toml'),
     '[mcp_servers.keepme]\ncommand = "y"\n\n[mcp_servers.graft]\ncommand = "OLD-BINARY"\nargs = ["stale"]\n');
-  const [w] = registerMcpConfigs(d, ['grok'], { home: d });
+  const [w] = registerMcpConfigs(d, ['agents'], { home: d });
 
   assert.equal(w.action, 'updated', 'an existing section used to freeze the launch command');
   const text = readFileSync(cfg, 'utf8');
@@ -349,7 +348,7 @@ test('a stale [mcp_servers.graft] is replaced, not skipped', () => {
   assert.equal((text.match(/\[mcp_servers\.graft\]/g) ?? []).length, 1, 'exactly one graft section');
 
   // Second run is a no-op, not a churn.
-  assert.equal(registerMcpConfigs(d, ['grok'], { home: d })[0].action, 'unchanged');
+  assert.equal(registerMcpConfigs(d, ['agents'], { home: d })[0].action, 'unchanged');
   assert.equal(readFileSync(cfg, 'utf8'), text, 'byte-identical on re-run');
 });
 

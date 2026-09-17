@@ -30,7 +30,6 @@ import {
   emptyExtractCache,
   readExtractCache,
   writeExtractCache,
-  type ExtractEntry,
 } from "./extract-cache.js";
 import { writeFingerprint } from "./fingerprint.js";
 import { seedGraph, type SeedResult } from "./seed.js";
@@ -150,6 +149,8 @@ function readGoModules(root: string, repoFiles: string[]): GoModule[] {
   return mods;
 }
 
+export const EXTRACT_CHECKPOINT_FILES = 1024;
+
 export async function buildGraph(
   dir: string,
   opts: GraphBuildOptions = {},
@@ -184,11 +185,12 @@ export async function buildGraph(
   const seed: SeedResult =
     opts.reuse === false ? { seeded: false } : seedGraph(root, { contextDir: opts.contextDir });
 
-  // Tier-1 memo: unchanged files replay their last parse. `entries` is rebuilt
-  // from scratch each run and keyed only by files currently on disk, so deletions
-  // fall out of both the cache and the fingerprint with no separate pruning pass.
+  // Update one extraction memo in place; retain unvisited prior entries for checkpoint recovery.
+  // Deleted source files are removed before parsing.
   const priorExtract = opts.reuse === false ? emptyExtractCache() : readExtractCache(outDir);
-  const entries: Record<string, ExtractEntry> = {};
+  const entries = priorExtract.files;
+  const currentFiles = new Set(files.map(file => file.rel));
+  for (const path of Object.keys(entries)) if (!currentFiles.has(path)) delete entries[path];
   let parsed = 0;
   let reused = 0;
 
@@ -207,9 +209,14 @@ export async function buildGraph(
   // file could be Ansible. Same await-before-the-sync-loop contract.
   if (files.some((f) => ansibleClaims(f.abs))) await warmAnsibleGrammar();
 
+  let checkpointFiles = EXTRACT_CHECKPOINT_FILES;
   files.forEach((f, i) => {
     const rel = f.rel;
     opts.onProgress?.({ phase: "parse", index: i, total: files.length, file: rel });
+    if (i >= checkpointFiles) {
+      writeExtractCache(outDir, priorExtract, false);
+      checkpointFiles *= 2; // Geometric checkpoints avoid serializing the whole graph every few seconds.
+    }
     // Unity tier first: scenes/prefabs/metas/meshes are hand-split, never
     // grammar-parsed (stock YAML grammars cannot parse `!u!` tags). Checked
     // before every other tier so no grammar can shadow these extensions.
@@ -309,10 +316,7 @@ export async function buildGraph(
   // and a cold build and an incremental build could disagree. The meaning layer
   // has its own cache (wiring.json itself, keyed on body_hash); this one is
   // strictly about not re-parsing.
-  writeExtractCache(outDir, {
-    ...emptyExtractCache(),
-    files: entries,
-  });
+  writeExtractCache(outDir, priorExtract);
 
   const edges = resolveEdges(nodes, rawEdges, { goModules: readGoModules(root, repoFiles) });
 

@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { buildGraph } from "../src/graph/build.js";
+import { buildGraph, EXTRACT_CHECKPOINT_FILES } from "../src/graph/build.js";
 import { extractCachePath, extractorStamp, readExtractCache, stampDir } from "../src/graph/extract-cache.js";
 import { fingerprintPath, isClean, probeDrift, readFingerprint } from "../src/graph/fingerprint.js";
 import { readAskIndex } from "../src/ask/index-file.js";
@@ -470,4 +470,18 @@ test("a build repairs an edit that leaves size and mtime untouched", async () =>
   const ids = (readGraph(wiringPath(outOf(d))) as GraphV1).nodes.map((n) => n.id);
   assert.ok(ids.includes("src/math.ts#sum"), "and the graph reflects the rename");
   assert.equal(ids.includes("src/math.ts#add"), false, "the old symbol is gone");
+});
+
+test('interrupted extraction resumes from its checkpoint', async () => {
+  const root = repo();
+  for (let i = 0; i < EXTRACT_CHECKPOINT_FILES; i++) writeFileSync(join(root, `file${i}.ts`), `export const v${i} = ${i};`);
+  const seen = new Set<number>();
+  await assert.rejects(buildGraph(root, { onProgress: ({ index }) => {
+    assert.ok(!seen.has(index), 'each file reports progress once');
+    seen.add(index);
+    if (index === EXTRACT_CHECKPOINT_FILES + 1) throw new Error('interrupted after checkpoint');
+  } }), /interrupted/);
+  const retry = await buildGraph(root);
+  assert.ok(retry.reused >= EXTRACT_CHECKPOINT_FILES, 'completed extraction survives interruption');
+  assert.ok(retry.parsed >= 1, 'unfinished files are still parsed');
 });

@@ -344,10 +344,15 @@ Both configs are user-level, so they apply to **every** repo you open with Codex
 
 ### MCP server
 
-`graft init` also registers Graft's MCP server with agents that support it, so these six tools appear natively, no shell required. Claude Code gets this too: `graft init` writes the server into the project's `.mcp.json` (restart Claude Code to load it). Skip with `--no-mcp`; run it manually with `graft mcp [dir]`.
+Graft now serves MCP over **Streamable HTTP with SSE notifications**. One local daemon serves multiple sessions and repositories. Stdio registrations must be migrated to HTTP.
+
+On Arch, build/install the package and run `graft-mcp-setup`; see [packaging and service setup](packaging/arch/README.md). For a foreground server, export `GRAFT_MCP_TOKEN` and run `graft mcp` (loopback port 8421; override with `--port`). Start clients with the same token in their environment, then rerun `graft init` for your selected hosts. Skip MCP registration with `--no-mcp`.
+
+Every tool requires an absolute `project_root`; optional `context_dir` selects an absolute output directory strictly inside `project_root`, with output-tree symlinks rejected before writes. Read-only queries remain available. Builds are local, structural, and require no API key. Queries refresh existing graphs. Use `graft_build` to create a missing graph; `graft_repo_map` summarizes it.
 
 | Tool | Takes | What it's for |
 |---|---|---|
+| `graft_build` | repository path | Build the graph and markdown cards; return output paths and statistics. |
 | `graft_find_code` | a question | Ranked nodes with file:line, source inlined — usually the full answer, no follow-up read needed. |
 | `graft_file_api` | a file path | Every signature in that file, no bodies — the API surface for a tenth of the tokens. |
 | `graft_trace_calls` | a symbol | Who depends on it, or what it depends on with `direction: out`, N levels deep for blast radius. |
@@ -358,7 +363,7 @@ Both configs are user-level, so they apply to **every** repo you open with Codex
 Register it by hand if your agent needs it explicit:
 
 ```json
-{ "mcpServers": { "graft": { "command": "npx", "args": ["-y", "@nanonets/graft", "mcp"] } } }
+{ "mcpServers": { "graft": { "type": "http", "url": "http://127.0.0.1:8421/mcp", "headers": { "Authorization": "Bearer ${GRAFT_MCP_TOKEN}" } } } }
 ```
 
 Where a CLI agent supports user-level `hooks.json`, `init` also installs Graft's post-edit hook — blast-radius warnings and automatic `$0` graph re-sync after edits (skip with `--no-hooks`).

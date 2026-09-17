@@ -30,14 +30,8 @@ test("Antigravity detects on its own markers, not bare ~/.gemini", () => {
   assert.ok(bare.includes('gemini') && !bare.includes('antigravity'), 'bare ~/.gemini is gemini only');
 });
 
-test("Antigravity MCP registers in ~/.gemini/config/mcp_config.json (global, mcpServers)", () => {
-  const home = fresh();
-  const [t] = mcpTargets('/repo', ['antigravity'], { home });
-  assert.ok(t, 'a target exists');
-  assert.equal(t.path, join(home, '.gemini', 'config', 'mcp_config.json'));
-  assert.equal(t.scope, 'global', 'applies to every workspace');
-  assert.equal(t.format, 'json');
-  assert.equal(t.topKey, 'mcpServers');
+test("Antigravity skips unverified HTTP configuration", () => {
+  assert.deepEqual(mcpTargets('/repo', ['antigravity'], { home: fresh() }), []);
 });
 
 test("Antigravity skill lands in ~/.gemini/skills/graft/SKILL.md, idempotently", () => {
@@ -52,13 +46,13 @@ test("Antigravity skill lands in ~/.gemini/skills/graft/SKILL.md, idempotently",
   assert.equal(second[0].action, 'unchanged', 're-run is a no-op');
 });
 
-test("runHostsInit --agents antigravity writes AGENTS.md + MCP + skill", () => {
+test("runHostsInit --agents antigravity writes AGENTS.md + skill and skips HTTP registration", () => {
   const home = fresh(), repo = fresh();
   mkdirSync(join(home, '.gemini', 'config'), { recursive: true });
   const r = runHostsInit(repo, { agents: ['antigravity'], home });
   assert.deepEqual(r.written.map((w) => w.id), ['antigravity']);
   assert.ok(readFileSync(join(repo, 'AGENTS.md'), 'utf8').includes('graft ask'), 'AGENTS.md written');
-  assert.ok(r.mcp.some((w) => w.path.endsWith(join('.gemini', 'config', 'mcp_config.json'))), 'MCP registered');
+  assert.deepEqual(r.mcp.map(m => m.action), ['skipped'], 'unverified HTTP registration reported');
   assert.ok(r.hooks.some((w) => w.path.endsWith(join('skills', 'graft', 'SKILL.md'))), 'skill placed');
   // --no-global suppresses the two global writes (MCP + skill), keeps AGENTS.md
   const noGlobal = runHostsInit(fresh(), { agents: ['antigravity'], home: fresh(), global: false });

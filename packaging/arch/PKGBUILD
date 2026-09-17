@@ -1,0 +1,56 @@
+# Maintainer: Raudbjorn
+pkgname=graft-git
+pkgver=0.18.0.r1.g94779d7
+pkgrel=1
+pkgdesc='Local repository context graphs with a shared MCP HTTP daemon'
+arch=('x86_64' 'aarch64')
+url='https://github.com/Raudbjorn/Graft'
+license=('MIT')
+depends=('nodejs>=20' 'git')
+makedepends=('npm' 'python' 'base-devel')
+provides=('graft')
+conflicts=('graft')
+options=('!strip')
+# A local Git repository can be supplied to validate an unpublished branch.
+_source=${GRAFT_ARCH_SOURCE:-https://github.com/Raudbjorn/Graft.git}
+[[ $_source = /* ]] && _source="file://$_source"
+# Separate caches for the remote fork and local validation snapshots.
+_source_hash=$(printf '%s' "${_source%%#*}" | sha256sum)
+_source_dir="graft-${_source_hash:0:12}"
+source=("$_source_dir::git+$_source")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/$_source_dir"
+  printf '%s.r%s.g%s' "$(node -p 'require("./package.json").version')" \
+    "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "$srcdir/$_source_dir"
+  npm ci --ignore-scripts --no-audit --no-fund --cache "$srcdir/npm-cache"
+  # Run only native dependency installers, never Graft's user postinstall hook.
+  mapfile -t _native < <(node -e 'for (const k of Object.keys(require("./package.json").dependencies)) if (k.startsWith("tree-sitter") && k !== "tree-sitter-wasm") console.log(k); console.log("esbuild")')
+  npm rebuild "${_native[@]}" --cache "$srcdir/npm-cache"
+  npm run build
+}
+
+check() {
+  cd "$srcdir/$_source_dir"
+  GRAFT_TELEMETRY=0 node --import tsx --test test/mcp-server.test.ts test/mcp-lifecycle.test.ts
+}
+
+package() {
+  cd "$srcdir/$_source_dir"
+  npm prune --omit=dev --ignore-scripts --no-audit --no-fund --cache "$srcdir/npm-cache"
+  install -d "$pkgdir/usr/lib/node_modules/@nanonets/graft" "$pkgdir/usr/bin"
+  cp -a dist node_modules package.json scripts "$pkgdir/usr/lib/node_modules/@nanonets/graft/"
+  find "$pkgdir/usr/lib/node_modules/@nanonets/graft/node_modules" -path '*/build/*' -type f \
+    \( -name '*.o' -o -name '*.mk' -o -name '*.gypi' -o -name '*Makefile' -o -name '*.d' \) -delete
+  chmod 755 "$pkgdir/usr/lib/node_modules/@nanonets/graft/dist/cli.js"
+  ln -s /usr/lib/node_modules/@nanonets/graft/dist/cli.js "$pkgdir/usr/bin/graft"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 packaging/arch/graft-mcp.service "$pkgdir/usr/lib/systemd/user/graft-mcp.service"
+  install -Dm755 packaging/arch/graft-mcp-setup "$pkgdir/usr/bin/graft-mcp-setup"
+  install -Dm644 packaging/arch/README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

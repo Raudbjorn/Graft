@@ -1,9 +1,8 @@
+// Explicit daemon registration tests opt in with a non-secret test token.
+process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Pin the MCP launch form so expectations don't depend on whether the machine
-// running the tests happens to have graft on PATH.
-process.env.GRAFT_MCP_NPX = '1';
 
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -97,24 +96,15 @@ test('wrong-shaped hooks (hooks is not an object) is never rewritten', () => {
 
 // ── runHostsInit wiring ─────────────────────────────────────────────────────
 
-test('runHostsInit --agents muse writes repo hooks + user-level MCP (mcpServers, schema_version)', () => {
+test('runHostsInit --agents muse writes repo hooks and skips unverified HTTP registration', () => {
   const home = fresh(); const repo = fresh();
   const r = runHostsInit(repo, { home, agents: ['muse'] });
   assert.ok(existsSync(cfgPath(repo)), 'hooks.json written in the repo');
   assert.ok(existsSync(shimPath(repo)), 'shim written in the repo');
   assert.ok(r.hooks.some((h) => h.id === 'muse-hooks'), 'reported in result.hooks');
   assert.ok(existsSync(join(repo, 'AGENTS.md')), 'instruction section written');
-  // MCP is user-level: the camelCase key and the mandatory schema version.
-  const mcp = r.mcp.find((m) => m.id === 'muse');
-  assert.ok(mcp, 'muse MCP write reported');
-  assert.equal(mcp.path, mcpPath(home));
-  const settings = JSON.parse(readFileSync(mcpPath(home), 'utf8'));
-  assert.equal(settings.schema_version, 1, 'mandatory schema version present');
-  assert.deepEqual(settings.mcpServers.graft, {
-    transport: 'stdio',
-    command: 'npx',
-    args: ['-y', '@nanonets/graft', 'mcp'],
-  });
+  assert.deepEqual(r.mcp.map(m => m.action), ['skipped'], 'unverified HTTP registration reported');
+  assert.ok(!existsSync(mcpPath(home)));
 });
 
 test('existing settings keep their keys; foreign servers and schema survive', () => {
@@ -127,9 +117,9 @@ test('existing settings keep their keys; foreign servers and schema survive', ()
   const r = runHostsInit(repo, { home, agents: ['muse'] });
   const settings = JSON.parse(readFileSync(mcpPath(home), 'utf8'));
   assert.ok((settings.mcpServers as any).other, 'foreign server preserved');
-  assert.ok((settings.mcpServers as any).graft, 'graft server merged');
+  assert.ok(!(settings.mcpServers as any).graft, 'unverified HTTP registration skipped');
   const again = runHostsInit(repo, { home, agents: ['muse'] });
-  assert.ok(again.mcp.some((m) => m.id === 'muse' && m.action === 'unchanged'), 'idempotent');
+  assert.deepEqual(again.mcp.map(m => m.action), ['skipped'], 'idempotent');
 });
 
 test('muse hooks are repo-local, so --no-global does NOT suppress them (MCP is)', () => {
@@ -140,14 +130,14 @@ test('muse hooks are repo-local, so --no-global does NOT suppress them (MCP is)'
   assert.ok(!r.mcp.some((m) => m.id === 'muse'), 'no muse MCP write reported');
 });
 
-test('--no-hooks skips the Muse hook files (instruction + MCP still written)', () => {
+test('--no-hooks skips the Muse hook files (instructions still written)', () => {
   const home = fresh(); const repo = fresh();
   const r = runHostsInit(repo, { home, agents: ['muse'], hooks: false });
   assert.ok(!existsSync(cfgPath(repo)), 'no hooks.json under --no-hooks');
   assert.ok(!existsSync(shimPath(repo)), 'no shim under --no-hooks');
   assert.ok(!r.hooks.some((h) => h.id?.startsWith('muse')), 'no muse hook writes reported');
   assert.ok(existsSync(join(repo, 'AGENTS.md')), 'the instruction section is still written');
-  assert.ok(existsSync(mcpPath(home)), 'the MCP registration is still written');
+  assert.ok(!existsSync(mcpPath(home)), 'unverified HTTP registration skipped');
 });
 
 test('--no-mcp skips the settings write (hooks still written)', () => {

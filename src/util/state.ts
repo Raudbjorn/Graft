@@ -10,6 +10,7 @@
  * outside had to change when it moved.
  */
 import { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join, dirname, isAbsolute } from 'node:path';
 
 export interface Stats {
@@ -19,14 +20,32 @@ export interface Stats {
   syncedAt: string | null; lastFile: string | null;
 }
 
-export const LOCK_STALE_MS = 300000;
+export const LOCK_STALE_MS = 300_000;
+/** Legacy/foreign locks without verifiable identity may be reclaimed after this age. */
+export const LOCK_UNVERIFIED_MAX_AGE_MS = LOCK_STALE_MS;
+
+/** Linux process instance: boot + PID namespace + start tick, not just a reusable PID. */
+export function processIdentity(pid: number): string | undefined {
+  if (process.platform !== 'linux') return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const start = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19];
+    const namespace = statSync(`/proc/${pid}/ns/pid`).ino;
+    return `${readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()}:${namespace}:${start}`;
+  } catch (error: any) {
+    if (error.code !== 'ENOENT' && error.code !== 'ESRCH' && error.code !== 'EACCES') console.error('Cannot identify graph lock owner:', error);
+    return undefined;
+  }
+}
+
+const LOCK_HOST = `${hostname()}:${processIdentity(process.pid)?.split(':').slice(0, 2).join(':') ?? 'unverified'}`;
 
 export function emptyStats(): Stats {
   return { nodeCount: 0, edgeCount: 0, languages: [], totalCount: 0, readyCount: 0,
     staleCount: 0, dirty: false, syncing: false, syncedAt: null, lastFile: null };
 }
 
-const LOCK_FILE = '.sync.lock';
+export const LOCK_FILE = '.sync.lock';
 
 /**
  * Where the pieces this module manages (the stats cache, the sync lock,
@@ -187,20 +206,48 @@ export function releaseLock(d: string): void {
 export function acquireLockIn(cache: string): boolean {
   const p = join(cache, LOCK_FILE);
   mkdirSync(cache, { recursive: true });
-  const payload = JSON.stringify({ pid: process.pid, at: new Date().toISOString() });
+  const payload = JSON.stringify({ pid: process.pid, host: LOCK_HOST, identity: processIdentity(process.pid), at: new Date().toISOString() });
   try {
     writeFileSync(p, payload, { flag: 'wx' }); // atomic exclusive create
     return true;
   } catch (e: any) {
     if (e?.code !== 'EEXIST') throw e;
-    let stale: boolean;
-    try { stale = Date.now() - statSync(p).mtimeMs >= LOCK_STALE_MS; } catch { stale = true; }
-    if (!stale) return false;
-    try { rmSync(p); } catch { /* another process reclaimed it */ }
+    const stat = statSync(p, { throwIfNoEntry: false });
+    if (!stat) return false; // The next bounded retry competes for the now-free lock.
+    let reclaim = Date.now() - stat.mtimeMs >= LOCK_UNVERIFIED_MAX_AGE_MS;
+    try {
+      const owner = JSON.parse(readFileSync(p, 'utf8'));
+      if (owner.host === LOCK_HOST && Number.isInteger(owner.pid) && owner.pid > 0) {
+        const identity = processIdentity(owner.pid);
+        if (owner.identity && identity) reclaim = owner.identity !== identity;
+        else {
+          try { process.kill(owner.pid, 0); }
+          catch (error: any) {
+            if (error.code === 'ESRCH') reclaim = true;
+            else if (error.code !== 'EPERM') console.error('Cannot check graph lock owner:', error);
+          }
+        }
+      }
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') console.error('Cannot read graph lock owner:', error);
+    }
+    if (!reclaim) return false;
+    try { rmSync(p); } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
     try { writeFileSync(p, payload, { flag: 'wx' }); return true; }
     catch (e2: any) { if (e2?.code === 'EEXIST') return false; throw e2; }
   }
 }
 export function releaseLockIn(cache: string): void {
-  try { rmSync(join(cache, LOCK_FILE)); } catch { /* already gone */ }
+  releaseOwnedLock(cache, process.pid, processIdentity(process.pid));
+}
+
+/** Used by workers and their parent after exit; do not remove a replacement owner's lock. */
+export function releaseOwnedLock(cache: string, pid: number, identity?: string): void {
+  const path = join(cache, LOCK_FILE);
+  try {
+    const owner = JSON.parse(readFileSync(path, 'utf8'));
+    if (owner.pid === pid && owner.host === LOCK_HOST && owner.identity === identity) rmSync(path);
+  } catch (error: any) {
+    if (error.code !== 'ENOENT') console.error(`Cannot release graph lock ${path}:`, error);
+  }
 }

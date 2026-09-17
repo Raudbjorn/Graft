@@ -39,15 +39,16 @@ export interface UpkeepResult {
  * the bytes match. A user who declined them at init time is honoured via
  * `opts.global`/`opts.hooks`, replayed from the stamp.
  */
-function rewriteWiring(repo: string, hosts: string[], opts: WiringOpts): void {
+function rewriteWiring(repo: string, hosts: string[], opts: WiringOpts, home?: string): void {
+  // MCP transport/authentication setup is explicit; a hook cannot provision a daemon.
   // `opts.global` reaches the claude layer for the same reason `opts.statusline` does:
   // its `~/.claude` writes (hosts/claude-global.ts) are out-of-repo, and a user who
   // declined those at init time must keep declining them on every replay.
   if (hosts.includes('claude'))
-    runInit(repo, { build: false, cliPath: graftCliPath(), mcp: opts.mcp, hooks: opts.hooks, statusline: opts.statusline, global: opts.global });
+    runInit(repo, { build: false, cliPath: graftCliPath(), mcp: false, hooks: opts.hooks, statusline: opts.statusline, global: opts.global, home });
   const others = hosts.filter((h) => h !== 'claude');
   if (others.length)
-    runHostsInit(repo, { agents: others, global: opts.global, mcp: opts.mcp, hooks: opts.hooks });
+    runHostsInit(repo, { agents: others, home, global: opts.global, mcp: false, hooks: opts.hooks });
 }
 
 /**
@@ -63,7 +64,7 @@ export function runUpkeep(
 ): UpkeepResult {
   const lines: string[] = [];
   try {
-    const refreshed = reconcileWiring(repo, current, { rewrite: rewriteWiring });
+    const refreshed = reconcileWiring(repo, current, { rewrite: (repo, hosts, wiring) => rewriteWiring(repo, hosts, wiring, opts.home) });
     const refreshLine = formatWiringRefresh(refreshed);
     if (refreshLine) lines.push(refreshLine);
   } catch { /* fail-soft: wiring refresh is never worth breaking a session for */ }

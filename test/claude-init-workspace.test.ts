@@ -1,3 +1,5 @@
+// Explicit daemon registration tests opt in with a non-secret test token.
+process.env.GRAFT_MCP_TOKEN = 'test-registration-token';
 /**
  * Workspace `init` fan-out + the subdirectory root walk, end to end.
  *
